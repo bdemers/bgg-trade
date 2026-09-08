@@ -147,3 +147,18 @@ To keep a game in `games.md` but out of the trade, add a `Hold` line to its sect
 
 Held games are emitted as commented-out `add_item` calls, so a regenerate cannot
 silently put them back up for trade.
+
+---
+
+## License
+
+Licensed under the [Apache License 2.0](LICENSE).
+
+That covers the code in this repository. It does **not** cover BoardGameGeek's
+data. These tools read the BGG XML API and `api.geekdo.com`, cache game details
+under `geeklist-<ID>/`, and post to geeklists on your behalf. All of that is
+subject to BGG's own terms of use, so treat the cached data as theirs rather
+than yours to redistribute.
+
+Be a good citizen with the rate limits. Both tools already sleep between calls
+for that reason.
