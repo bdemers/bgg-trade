@@ -61,19 +61,6 @@ New in Shrink
 
 Will cover first $10 outside of CONUS
 
-## Castles of Mad King Ludwig
-
-- BGG Link: https://boardgamegeek.com/boardgame/155426/castles-of-mad-king-ludwig
-
-### Description
-
-Excellent condition
-
-Great game, but nobody else in my house will play it
-(non-smoking household)
-
-Will cover first $10 outside of CONUS
-
 ## Infinity Gauntlet: A Love Letter Game
 
 - BGG Link: https://boardgamegeek.com/boardgame/304285/infinity-gauntlet-a-love-letter-game
@@ -101,23 +88,11 @@ Will cover first $10 outside of CONUS
 ## Monopoly: The Card Game
 
 - BGG Link: https://boardgamegeek.com/boardgame/684/monopoly-the-card-game
+- Hold: my wife still wants to try this one
 
 ### Description
 
 Cards in Shrink
-(non-smoking household)
-
-Will cover the first $10 outside of CONUS
-
-## Boss Monster: The Dungeon Building Card Game
-
-- BGG Link: https://boardgamegeek.com/boardgame/131835/boss-monster-the-dungeon-building-card-game
-
-### Description
-
-Great condition, very minor shelf corner wear, game was played a couple of times.
-
-Great game, not getting played though.
 (non-smoking household)
 
 Will cover the first $10 outside of CONUS

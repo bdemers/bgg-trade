@@ -9,12 +9,13 @@ import urllib.request
 import urllib.parse
 import xml.etree.ElementTree as ET
 
-# Configuration
-CACHE_DIR = "june-2026-us-math-trade--379213"
-GAME_DETAILS_DIR = os.path.join(CACHE_DIR, "game_details")
-GEEKLIST_ID = "379213"
-USER_COLLECTION_FILE = os.path.join(CACHE_DIR, "user_collection.xml")
-GEEKLIST_ITEMS_FILE = os.path.join(CACHE_DIR, "geeklist_items.json")
+# Configuration. All of these are replaced in main() from .env / CLI flags;
+# the values here are only placeholders so module-level imports work.
+GEEKLIST_ID = ""
+CACHE_DIR = ""
+GAME_DETAILS_DIR = ""
+USER_COLLECTION_FILE = ""
+GEEKLIST_ITEMS_FILE = ""
 
 def load_env():
     """Load variables from .env file if it exists."""
@@ -31,30 +32,66 @@ def load_env():
                     val = val.strip().strip("'\"")
                     os.environ[key] = val
 
-def extract_geek_session():
-    """Extract GeekSession cookie value from add_games.sh if it exists."""
-    script_path = "add_games.sh"
-    if os.path.exists(script_path):
-        with open(script_path, 'r', encoding='utf-8') as f:
-            content = f.read()
-        match = re.search(r'GEEK_SESSION="([^"]*)"', content)
-        if match:
-            return match.group(1).strip()
-    return ""
+PREFS = {}
+
+# Fallbacks so the tool still runs if preferences.toml is missing or partial.
+DEFAULT_PREFS = {
+    "profile": {"max_games": 80, "owned": 1.0, "wishlist": 3.0, "rating_min": 7.5,
+                "plays_per_play": 0.25, "plays_cap": 3.0, "favorites": {}},
+    "weights": {"mechanic_default": 0.2, "category_share": 0.4,
+                "mechanic_share": 0.4, "designer_share": 0.2, "mechanics": {}},
+    "gateway": {"enabled": False, "penalty": 1.0, "categories": [], "mechanics": [],
+                "exceptional": {"min_rating": 7.0, "max_rank": 2500, "patterns": []}},
+    "scoring": {"scale": 10.0, "avoidance_share": 0.25,
+                "expansion_bonus": 3.0, "score_cap": 12.0},
+    "candidates": {"min_bgg_rating": 6.0, "max_bgg_rank": 6000},
+}
+
+
+def _merge(base, override):
+    """Recursive dict merge so a partial preferences.toml still works."""
+    out = dict(base)
+    for k, v in (override or {}).items():
+        out[k] = _merge(base[k], v) if isinstance(v, dict) and isinstance(base.get(k), dict) else v
+    return out
+
+
+def load_preferences(path="preferences.toml"):
+    """Load tunable taste settings. Everything the recommender believes lives here."""
+    global PREFS
+    PREFS = DEFAULT_PREFS
+    if os.path.exists(path):
+        try:
+            import tomllib  # stdlib on Python 3.11+
+        except ImportError:
+            print(f"Warning: Python {sys.version_info.major}.{sys.version_info.minor} "
+                  f"has no tomllib, so {path} is being ignored and built-in defaults "
+                  f"are used. Python 3.11+ is needed to tune preferences.")
+            return PREFS
+        try:
+            with open(path, "rb") as f:
+                PREFS = _merge(DEFAULT_PREFS, tomllib.load(f))
+            print(f"Loaded preferences from {path}")
+        except Exception as e:
+            print(f"Warning: could not read {path} ({e}); using built-in defaults.")
+    else:
+        print(f"Warning: {path} not found; using built-in defaults.")
+    return PREFS
+
 
 def get_auth_headers():
-    """Determine the authentication headers to use based on env variables or add_games.sh."""
-    bga_token = os.environ.get("BGA_TOKEN")
-    if bga_token:
-        print("Using BGA_TOKEN from environment/dotenv for Bearer authentication.")
-        return {"Authorization": f"Bearer {bga_token}"}
-        
-    geek_session = extract_geek_session()
+    """Build auth headers from .env: the GEEK_SESSION cookie first, BGA_TOKEN as the alternative."""
+    geek_session = os.environ.get("GEEK_SESSION", "").strip()
     if geek_session:
-        print("Using GEEK_SESSION from add_games.sh for GeekAuth authentication.")
+        print("Using GEEK_SESSION for GeekAuth authentication.")
         return {"Authorization": f"GeekAuth {geek_session}"}
-        
-    print("Warning: No authentication credentials found (no BGA_TOKEN in env or GEEK_SESSION in add_games.sh).")
+
+    bga_token = os.environ.get("BGA_TOKEN", "").strip()
+    if bga_token:
+        print("Using BGA_TOKEN for Bearer authentication.")
+        return {"Authorization": f"Bearer {bga_token}"}
+
+    print("Warning: No credentials found. Set GEEK_SESSION or BGA_TOKEN in .env (see .env.example).")
     return {}
 
 def get_geeklist_title_from_items(items):
@@ -62,7 +99,7 @@ def get_geeklist_title_from_items(items):
     for item in items:
         href = item.get('href', '')
         if href:
-            # Format: /geeklist/379213/june-2026-us-math-trade?itemid=12869765#12869765
+            # Format: /geeklist/<id>/<slug>?itemid=<itemid>#<itemid>
             parts = [p for p in href.split('/') if p]
             if len(parts) >= 3:
                 slug_part = parts[2]
@@ -73,7 +110,22 @@ def get_geeklist_title_from_items(items):
     return f"Geeklist {GEEKLIST_ID}"
 
 def get_bgg_user_id(username, auth_headers):
-    """Retrieve the BGG numeric user ID for a username."""
+    """Resolve the BGG numeric user ID, preferring .env over the API.
+
+    xmlapi2/user is locked down and returns 401 with or without credentials,
+    so BGG_USER_ID is the reliable path. Without an ID the matcher cannot tell
+    which listings are yours, and the games you are giving away quietly stay
+    in your own preference profile.
+    """
+    configured = os.environ.get("BGG_USER_ID", "").strip()
+    if configured:
+        try:
+            user_id = int(configured)
+            print(f"Using BGG_USER_ID from .env for '{username}': {user_id}")
+            return user_id
+        except ValueError:
+            print(f"Warning: BGG_USER_ID='{configured}' is not a number; falling back to the API.")
+
     url = f"https://boardgamegeek.com/xmlapi2/user?name={urllib.parse.quote(username)}"
     try:
         data_bytes, _ = make_bgg_request(url, headers=auth_headers)
@@ -199,8 +251,18 @@ def parse_collection():
                     except ValueError:
                         pass
         
+        # Plays are the best evidence of what actually works at the table.
+        numplays = 0
+        plays_elem = item.find('numplays')
+        if plays_elem is not None and plays_elem.text:
+            try:
+                numplays = int(plays_elem.text)
+            except ValueError:
+                pass
+
         collection[objectid] = {
             'name': name,
+            'numplays': numplays,
             'own': own,
             'prevowned': prevowned,
             'wishlist': wishlist,
@@ -255,12 +317,19 @@ def download_geeklist(geeklist_id, auth_headers, force=False):
                 time.sleep(2)
                 
         if not success:
-            print(f"Failed to download/parse page {page} after 3 attempts. Stopping.")
-            break
-            
+            # Do NOT save a truncated list over a good cache: a timeout on page 100
+            # of 135 would silently shrink the trade list on every later run.
+            print(f"Failed to download/parse page {page} after 3 attempts.")
+            if os.path.exists(GEEKLIST_ITEMS_FILE):
+                print("Keeping the existing cache rather than overwriting it with a partial download.")
+                with open(GEEKLIST_ITEMS_FILE, 'r', encoding='utf-8') as f:
+                    return json.load(f)
+            print("No existing cache; returning the partial download without saving it.")
+            return all_items
+
         page += 1
         time.sleep(0.3)  # Be polite to BGG API
-            
+
     if all_items:
         with open(GEEKLIST_ITEMS_FILE, 'w', encoding='utf-8') as f:
             json.dump(all_items, f, indent=2, ensure_ascii=False)
@@ -303,50 +372,69 @@ def build_user_profile(collection, offered_game_ids, auth_headers=None):
     """Build a profile of the user's liked mechanics, categories, and designers, as well as disliked ones."""
     print("Building user preference profile...")
     
+    p = PREFS['profile']
+    favorites = p.get('favorites', {})
+
     # 1. Calculate positive weight for each game in the collection
     candidate_weights = {}
     for gid, info in collection.items():
         multiplier = 0.0
-        
+
+        is_offered = gid in offered_game_ids
+        is_for_trade = info.get('fortrade', False)
+        is_prevowned = info.get('prevowned', False)
+
         # A. Wishlist / Want / Want to Play / Want to Buy (Strongest signal)
         is_wanted = info.get('wishlist') or info.get('want') or info.get('wanttoplay') or info.get('wanttobuy')
         if is_wanted:
             prio = info.get('wishlist_priority', 0)
             prio_boost = max(0.5, (6 - prio) * 0.5) if prio > 0 else 1.0
-            multiplier += 3.0 * prio_boost
-            
-        # B. Rating signal
-        if info['rating'] is not None:
-            if info['rating'] >= 7.5:
+            multiplier += p['wishlist'] * prio_boost
+
+        # B. Rating signal. Skipped for games leaving in this trade: a game you
+        # rated 8 but are trading away should not also define what you want.
+        if info['rating'] is not None and not is_offered and not is_for_trade:
+            if info['rating'] >= p['rating_min']:
                 multiplier += max(1.0, (info['rating'] - 6.0) * 1.5)
-            elif info['rating'] <= 5.5:
-                # Poor ratings are ignored for positive profile
-                pass
-                
+
         # C. Ownership signal (only if not offered in trade, not marked for trade, not prevowned)
-        is_offered = gid in offered_game_ids
-        is_for_trade = info.get('fortrade', False)
-        is_prevowned = info.get('prevowned', False)
-        
         if info['own'] and not is_offered and not is_for_trade and not is_prevowned:
-            multiplier += 1.0
-            
+            multiplier += p['owned']
+
+            # D. Plays. Without this, 133 owned games tie at exactly 1.0 and the
+            # 80-game cut is decided by dict order, dropping Splendor (35 plays)
+            # while keeping Bananagrams (0 plays).
+            plays = info.get('numplays', 0)
+            if plays > 0:
+                multiplier += min(p['plays_cap'], plays * p['plays_per_play'])
+
+        # E. Declared favorites override everything. Play count measures what is
+        # easy to schedule, not what you love: Root and Terraforming Mars rank
+        # #42 and #36 by plays.
+        if gid in favorites:
+            multiplier += float(favorites[gid])
+
         if multiplier > 0.0:
             candidate_weights[gid] = multiplier
-            
+
     # Sort positive candidate IDs by multiplier descending
     sorted_candidates = sorted(candidate_weights.items(), key=lambda x: x[1], reverse=True)
-    
-    # Cap positive profile IDs to 80 to keep it efficient but rich
-    profile_ids = [x[0] for x in sorted_candidates[:80]]
-    
+
+    profile_ids = [x[0] for x in sorted_candidates[:p['max_games']]]
+
     print(f"  Selected {len(profile_ids)} representative games to build positive profile.")
+    top_preview = [f"{collection[g]['name']} ({candidate_weights[g]:.1f})" for g in profile_ids[:6]]
+    print(f"  Top of profile: {', '.join(top_preview)}")
     
     category_weights = {}
     mechanic_weights = {}
     designer_weights = {}
     user_games_data = {}
-    
+
+    # Hoisted out of the per-game loop; this table now lives in preferences.toml.
+    mechanic_prefs = PREFS['weights'].get('mechanics', {})
+    mechanic_default = PREFS['weights']['mechanic_default']
+
     for gid in profile_ids:
         details = get_game_details(gid, auth_headers)
         if not details or 'item' not in details:
@@ -356,40 +444,26 @@ def build_user_profile(collection, offered_game_ids, auth_headers=None):
         links = item.get('links', {})
         multiplier = candidate_weights[gid]
         
+        info = collection[gid]
         user_games_data[gid] = {
-            'name': collection[gid]['name'],
+            'name': info['name'],
+            # "Similar to X" should only ever cite a game you own and have played.
+            # Citing a wishlist game is circular: it recommends things like things
+            # you already want.
+            'owned_and_played': bool(info.get('own')) and info.get('numplays', 0) > 0,
+            'numplays': info.get('numplays', 0),
             'categories': [cat['name'] for cat in links.get('boardgamecategory', [])],
             'mechanics': [mech['name'] for mech in links.get('boardgamemechanic', [])],
             'designers': [des['name'] for des in links.get('boardgamedesigner', [])]
         }
-            
+
         for cat in links.get('boardgamecategory', []):
             name = cat['name']
             category_weights[name] = category_weights.get(name, 0) + multiplier
-            
-        # Define user mechanic preferences (Tier-based weights)
-        mechanic_prefs = {
-            # Tier 1: Love (2.5x)
-            "Variable Player Powers": 2.5,
-            "Worker Placement": 2.5,
-            "Scenario / Mission / Campaign Game": 2.5,
-            # Tier 2: Like (1.5x)
-            "Deck, Bag, and Pool Building": 1.5,
-            "Pattern Building": 1.5,
-            "Modular Board": 1.5,
-            # Tier 3: Neutral/Accepted (1.0x)
-            "Hand Management": 1.0,
-            "Dice Rolling": 1.0,
-            "Set Collection": 1.0,
-            "Tile Placement": 1.0,
-            "Variable Set-up": 1.0,
-            "Area Movement": 1.0,
-            "Hexagon Grid": 1.0
-        }
-        
+
         for mech in links.get('boardgamemechanic', []):
             name = mech['name']
-            pref_mult = mechanic_prefs.get(name, 0.2) # Suppress unselected mechanics to 0.2x
+            pref_mult = mechanic_prefs.get(name, mechanic_default)
             mechanic_weights[name] = mechanic_weights.get(name, 0) + multiplier * pref_mult
             
         for des in links.get('boardgamedesigner', []):
@@ -491,6 +565,41 @@ def is_junior_kids_version(candidate_title, owned_titles):
                     
     return False
 
+def is_exceptional_edition(title, bgg_rating, bgg_rank):
+    """True for a rare/premium printing or a Legacy variant worth an exception.
+
+    A word match alone is not enough: "Deluxe Camping" (rank 17472) and
+    "Halloween: Limited Edition Dice" both match on title only.
+    """
+    exc = PREFS['gateway'].get('exceptional', {})
+    patterns = exc.get('patterns', [])
+    if not any(re.search(pat, title, re.I) for pat in patterns):
+        return False
+
+    try:
+        rank = int(bgg_rank)
+    except (TypeError, ValueError):
+        rank = 999999
+    if rank <= 0:
+        rank = 999999
+
+    return (bgg_rating or 0) >= exc.get('min_rating', 7.0) or rank <= exc.get('max_rank', 2500)
+
+
+def is_gateway_game(categories, mechanics):
+    """True for family/party/dexterity fare, of which there is already enough.
+
+    Detection is by category and mechanic, deliberately NOT by playtime:
+    Splendor is a 30-minute game that is explicitly wanted, so a length
+    rule would misfire on exactly the wrong games.
+    """
+    g = PREFS['gateway']
+    if not g.get('enabled'):
+        return False
+    return (bool(set(categories) & set(g.get('categories', [])))
+            or bool(set(mechanics) & set(g.get('mechanics', []))))
+
+
 def match_geeklist(geeklist, collection, profile, auth_headers=None):
     """Match the geeklist items to the user profile and return recommendations."""
     print("Matching geeklist items to user preferences...")
@@ -579,8 +688,8 @@ def match_geeklist(geeklist, collection, profile, auth_headers=None):
                 except ValueError:
                     rank_val = 999999
                     
-            # Widen candidate criteria to find more recommendations (~100)
-            if game['bgg_rating'] >= 6.0 and rank_val <= 6000:
+            if (game['bgg_rating'] >= PREFS['candidates']['min_bgg_rating']
+                    and rank_val <= PREFS['candidates']['max_bgg_rank']):
                 candidates.append((gid, game, "recommendation", 0))
                 
     print(f"Filtered to {len(candidates)} candidate games to analyze details.")
@@ -615,8 +724,24 @@ def match_geeklist(geeklist, collection, profile, auth_headers=None):
         
         for cat in game_cats:
             cat_score += profile['categories'].get(cat, 0.0)
+
+        # Pairing: mechanics flagged "meh by itself" only count fully when the
+        # game also brings a core mechanic. Set Collection in an engine builder
+        # is worth more than Set Collection in a bland filler.
+        pair = PREFS.get('pairing', {})
+        if pair.get('enabled'):
+            supporting = set(pair.get('supporting', []))
+            has_core = bool(set(game_mechs) & set(pair.get('core', [])))
+            unpaired = pair.get('unpaired_factor', 0.4)
+        else:
+            supporting, has_core, unpaired = set(), True, 1.0
+
         for mech in game_mechs:
-            mech_score += profile['mechanics'].get(mech, 0.0)
+            value = profile['mechanics'].get(mech, 0.0)
+            if not has_core and mech in supporting:
+                value *= unpaired
+            mech_score += value
+
         for des in game_des:
             des_score += profile['designers'].get(des, 0.0)
             
@@ -627,8 +752,11 @@ def match_geeklist(geeklist, collection, profile, auth_headers=None):
         
         # Total similarity score (weighted average)
         # Designer match gets high weight if present, else category/mechanic
-        similarity_score = (cat_comp * 0.4) + (mech_comp * 0.4) + (des_comp * 0.2)
-        similarity_score *= 10.0 # Scale to 10
+        w = PREFS['weights']
+        similarity_score = ((cat_comp * w['category_share'])
+                            + (mech_comp * w['mechanic_share'])
+                            + (des_comp * w['designer_share']))
+        similarity_score *= PREFS['scoring']['scale']
         
         # Calculate avoidance penalty
         neg_cat_score = 0.0
@@ -646,18 +774,24 @@ def match_geeklist(geeklist, collection, profile, auth_headers=None):
         neg_mech_comp = (neg_mech_score / len(game_mechs)) if game_mechs else 0.0
         neg_des_comp = max([profile.get('negative_designers', {}).get(d, 0.0) for d in game_des]) if game_des else 0.0
         
-        avoidance_score = (neg_cat_comp * 0.4) + (neg_mech_comp * 0.4) + (neg_des_comp * 0.2)
-        avoidance_score *= 10.0
-        
+        avoidance_score = ((neg_cat_comp * w['category_share'])
+                           + (neg_mech_comp * w['mechanic_share'])
+                           + (neg_des_comp * w['designer_share']))
+        avoidance_score *= PREFS['scoring']['scale']
+
         # Penalize similarity score if it is a recommendation candidate (not explicit wishlist/want item)
         if match_type == "recommendation":
-            similarity_score = max(0.0, similarity_score - (avoidance_score * 0.25))
-        
-        # Find the most similar game in the user's collection
+            similarity_score = max(
+                0.0, similarity_score - (avoidance_score * PREFS['scoring']['avoidance_share']))
+
+        # Find the most similar game in the user's collection.
+        # Only games actually owned and played are eligible to be cited.
         best_similar_game = None
         best_overlap_score = -1
-        
+
         for ugid, ugame in profile.get('user_games_data', {}).items():
+            if not ugame.get('owned_and_played'):
+                continue
             cat_overlap = set(game_cats) & set(ugame['categories'])
             mech_overlap = set(game_mechs) & set(ugame['mechanics'])
             des_overlap = set(game_des) & set(ugame['designers'])
@@ -697,15 +831,57 @@ def match_geeklist(geeklist, collection, profile, auth_headers=None):
         # Boost score if it expands an owned game
         recommendation_score = similarity_score
         if is_expansion_of_owned:
-            recommendation_score += 3.0 # Big boost for expansions of owned games
-            
+            recommendation_score += PREFS['scoring']['expansion_bonus']
+
         # Add rating bonus (higher quality games get higher priority)
         rating_factor = max(0.5, (game['bgg_rating'] - 5.0) / 3.0) # multiplier
         final_score = recommendation_score * rating_factor
-        
-        # Cap final score at 10.0 for recommendations, unless it has boosts
-        final_score = round(min(12.0, final_score), 2)
-        
+
+        # Gateway / family fare is a "no" by default, unless this particular
+        # copy is an exceptional edition (anniversary, Legacy, deluxe, ...).
+        flags = []
+
+        # Mechanics you said to avoid. The strongest dislike wins rather than
+        # stacking, so a game with three of them is not penalized three times.
+        disliked = PREFS.get('dislikes', {}).get('mechanics', {})
+        hits = {m: float(disliked[m]) for m in game_mechs if m in disliked}
+        if hits:
+            worst = min(hits, key=hits.get)
+            final_score *= hits[worst]
+            flags.append(f"disliked: {worst}")
+
+        if not has_core and (supporting & set(game_mechs)):
+            flags.append("supporting mechanics unpaired")
+
+        gateway = is_gateway_game(game_cats, game_mechs)
+        exceptional = is_exceptional_edition(game['title'], game['bgg_rating'], game['bgg_rank'])
+        if exceptional:
+            flags.append("exceptional edition")
+
+        # Redoes something already on the shelf. Demoted, never filtered.
+        reimp = PREFS.get('reimplementation', {})
+        if reimp.get('enabled') and match_type == "recommendation":
+            redone = []
+            for link_type in reimp.get('link_types', []):
+                for entry in links.get(link_type, []):
+                    parent_id = str(entry.get('objectid'))
+                    if parent_id in collection and collection[parent_id].get('own'):
+                        redone.append(collection[parent_id]['name'])
+            if redone:
+                if exceptional and reimp.get('exempt_exceptional', True):
+                    flags.append(f"reimplements {redone[0]}, exempt")
+                else:
+                    final_score *= reimp.get('penalty', 0.5)
+                    flags.append(f"reimplements {redone[0]} (owned)")
+        if gateway and match_type == "recommendation":
+            if exceptional:
+                flags.append("gateway penalty waived")
+            else:
+                final_score *= PREFS['gateway']['penalty']
+                flags.append("gateway penalty")
+
+        final_score = round(min(PREFS['scoring']['score_cap'], final_score), 2)
+
         matched_results.append({
             'id': gid,
             'title': game['title'],
@@ -721,7 +897,8 @@ def match_geeklist(geeklist, collection, profile, auth_headers=None):
             'genres': game_cats[:3],
             'mechanics': game_mechs[:3],
             'designers': game_des[:2],
-            'reason': reason
+            'reason': reason,
+            'flags': flags
         })
         
     # Sort results
@@ -735,8 +912,113 @@ def match_geeklist(geeklist, collection, profile, auth_headers=None):
     
     return wishlist_results, recommendation_results
 
+HTML_STYLE = """
+:root { color-scheme: light dark; --fg:#1a1a1a; --bg:#fff; --muted:#666;
+        --line:#e2e2e2; --head:#f6f6f6; --link:#0b62c4; }
+@media (prefers-color-scheme: dark) {
+  :root { --fg:#e6e6e6; --bg:#161616; --muted:#9a9a9a;
+          --line:#333; --head:#212121; --link:#6fb2ff; }
+}
+body { margin:0 auto; padding:2rem 1.25rem; max-width:1200px; color:var(--fg);
+       background:var(--bg); font:15px/1.55 -apple-system, BlinkMacSystemFont,
+       "Segoe UI", Helvetica, Arial, sans-serif; }
+h1 { font-size:1.6rem; margin:0 0 .75rem; }
+h2 { font-size:1.2rem; margin:2rem 0 .75rem; padding-bottom:.3rem;
+     border-bottom:1px solid var(--line); }
+a { color:var(--link); text-decoration:none; }
+a:hover { text-decoration:underline; }
+p { margin:.5rem 0; }
+ul { margin:.5rem 0 .5rem 1.25rem; padding:0; }
+em { color:var(--muted); }
+.table-wrap { overflow-x:auto; margin:1rem 0; }
+table { border-collapse:collapse; width:100%; font-size:14px; }
+th, td { border:1px solid var(--line); padding:.45rem .6rem;
+         text-align:left; vertical-align:top; }
+th { background:var(--head); font-weight:600; white-space:nowrap; }
+tr:nth-child(even) td { background:color-mix(in srgb, var(--head) 45%, transparent); }
+"""
+
+
+def _inline(text):
+    """Convert the inline markdown the report uses: links, bold, italics, <br>."""
+    out = (text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;"))
+    out = out.replace("&lt;br&gt;", "<br>")  # the report emits literal <br>
+    out = re.sub(r"\[([^\]]+)\]\(([^)]+)\)",
+                 r'<a href="\2" target="_blank" rel="noopener">\1</a>', out)
+    out = re.sub(r"\*\*([^*]+)\*\*", r"<strong>\1</strong>", out)
+    out = re.sub(r"\*([^*]+)\*", r"<em>\1</em>", out)
+    out = re.sub(r"`([^`]+)`", r"<code>\1</code>", out)
+    return out
+
+
+def markdown_to_html(md, title):
+    """Render the report's markdown subset to a standalone HTML page.
+
+    Deliberately narrow: it handles only what generate_reports emits
+    (headings, paragraphs, bullets, and pipe tables).
+    """
+    body = []
+    lines = md.split("\n")
+    i = 0
+    while i < len(lines):
+        line = lines[i]
+        stripped = line.strip()
+
+        if not stripped:
+            i += 1
+            continue
+
+        if stripped.startswith("## "):
+            body.append(f"<h2>{_inline(stripped[3:])}</h2>")
+        elif stripped.startswith("# "):
+            body.append(f"<h1>{_inline(stripped[2:])}</h1>")
+        elif stripped.startswith("- "):
+            items = []
+            while i < len(lines) and lines[i].strip().startswith("- "):
+                items.append(f"<li>{_inline(lines[i].strip()[2:])}</li>")
+                i += 1
+            body.append("<ul>" + "".join(items) + "</ul>")
+            continue
+        elif stripped.startswith("|"):
+            rows = []
+            while i < len(lines) and lines[i].strip().startswith("|"):
+                rows.append([c.strip() for c in lines[i].strip().strip("|").split("|")])
+                i += 1
+            # Row 1 is the header, row 2 is the :---: alignment separator.
+            head, sep, data = rows[0], rows[1] if len(rows) > 1 else [], rows[2:]
+            aligns = ["center" if c.startswith(":") and c.endswith(":")
+                      else "right" if c.endswith(":") else "left" for c in sep]
+            html = ["<div class='table-wrap'><table><thead><tr>"]
+            for n, c in enumerate(head):
+                a = aligns[n] if n < len(aligns) else "left"
+                html.append(f"<th style='text-align:{a}'>{_inline(c)}</th>")
+            html.append("</tr></thead><tbody>")
+            for row in data:
+                html.append("<tr>")
+                for n, c in enumerate(row):
+                    a = aligns[n] if n < len(aligns) else "left"
+                    html.append(f"<td style='text-align:{a}'>{_inline(c)}</td>")
+                html.append("</tr>")
+            html.append("</tbody></table></div>")
+            body.append("".join(html))
+            continue
+        else:
+            body.append(f"<p>{_inline(stripped)}</p>")
+        i += 1
+
+    return (
+        "<!doctype html>\n<html lang=\"en\">\n<head>\n"
+        "<meta charset=\"utf-8\">\n"
+        "<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">\n"
+        f"<title>{_inline(title)}</title>\n"
+        f"<style>{HTML_STYLE}</style>\n</head>\n<body>\n"
+        + "\n".join(body)
+        + "\n</body>\n</html>\n"
+    )
+
+
 def generate_reports(wishlist, recommendations, username, geeklist_title=None):
-    """Write markdown matching reports to the workspace and the artifact directory."""
+    """Write the matching report to markdown and to a standalone HTML page."""
     if not geeklist_title:
         geeklist_title = f"Geeklist {GEEKLIST_ID}"
     report_content = f"# BGG Math Trade Matching Report\n\n"
@@ -780,59 +1062,49 @@ def generate_reports(wishlist, recommendations, username, geeklist_title=None):
             reason = r['reason']
             if r['is_expansion']:
                 reason = f"🔌 **Expansion of {', '.join(r['expands'])}**<br>" + reason
+            if r.get('flags'):
+                reason += f"<br>*{'; '.join(r['flags'])}*"
                 
             instances_str = ", ".join([f"[{inst['author']}]({inst['href']})" for inst in r['trade_instances']])
             report_content += f"| **{r['final_score']}** | **{game_link}** | {reason} | {r['bgg_rating']} | {instances_str} |\n"
         report_content += "\n"
         
-    # Write to local file
     local_report_path = "matching_report.md"
     with open(local_report_path, 'w', encoding='utf-8') as f:
         f.write(report_content)
-    print(f"Saved matching report to workspace: {local_report_path}")
-    
-    # Also write to artifact directory if running in Antigravity environment
-    # Determine the conversation ID dynamically from the environment
-    conversation_id = "fa6d65c1-cc17-40f0-8262-979c87035836" # default/fallback
-    metadata_str = os.environ.get("ANTIGRAVITY_SOURCE_METADATA")
-    if metadata_str:
-        try:
-            metadata = json.loads(metadata_str)
-            cid = metadata.get("tool", {}).get("conversationId")
-            if cid:
-                conversation_id = cid
-        except Exception:
-            pass
-            
-    artifact_dir = f"/Users/bdemers/.gemini/antigravity-cli/brain/{conversation_id}"
-    if os.path.exists(artifact_dir):
-        artifact_path = os.path.join(artifact_dir, "matching_report.md")
-        with open(artifact_path, 'w', encoding='utf-8') as f:
-            f.write(report_content)
-        print(f"Saved matching report to artifact directory: {artifact_path}")
+    print(f"Saved matching report: {local_report_path}")
+
+    html_report_path = "matching_report.html"
+    title = f"BGG Math Trade Matches - {geeklist_title}"
+    with open(html_report_path, 'w', encoding='utf-8') as f:
+        f.write(markdown_to_html(report_content, title))
+    print(f"Saved matching report: {html_report_path}")
 
 def main():
     global GEEKLIST_ID, CACHE_DIR, GAME_DETAILS_DIR, USER_COLLECTION_FILE, GEEKLIST_ITEMS_FILE
     
     # Load env variables (e.g. from .env file or environment)
     load_env()
-    
+    load_preferences()
+
     parser = argparse.ArgumentParser(description="Match BGG Math Trade items to user likes.")
-    parser.add_argument("--username", default="bdemers", help="BGG Username")
-    parser.add_argument("--geeklist", default="379213", help="BGG Geeklist ID for the Math Trade")
+    parser.add_argument("--username", default=os.environ.get("BGG_USERNAME"),
+                        help="BGG Username (defaults to BGG_USERNAME in .env)")
+    parser.add_argument("--geeklist", default=os.environ.get("GEEKLIST_ID"),
+                        help="BGG Geeklist ID for the Math Trade (defaults to GEEKLIST_ID in .env)")
     parser.add_argument("--cache-dir", default=None, help="Custom cache directory")
     parser.add_argument("--refresh-collection", action="store_true", help="Force refresh of user collection")
     parser.add_argument("--refresh-geeklist", action="store_true", help="Force refresh of math trade geeklist items")
     args = parser.parse_args()
     
+    if not args.geeklist:
+        parser.error("No geeklist ID. Set GEEKLIST_ID in .env (see .env.example) or pass --geeklist.")
+    if not args.username:
+        parser.error("No BGG username. Set BGG_USERNAME in .env (see .env.example) or pass --username.")
+
     GEEKLIST_ID = args.geeklist
-    if args.cache_dir:
-        CACHE_DIR = args.cache_dir
-    elif GEEKLIST_ID == "379213":
-        CACHE_DIR = "june-2026-us-math-trade--379213"
-    else:
-        CACHE_DIR = f"geeklist-{GEEKLIST_ID}"
-        
+    CACHE_DIR = args.cache_dir or f"geeklist-{GEEKLIST_ID}"
+
     GAME_DETAILS_DIR = os.path.join(CACHE_DIR, "game_details")
     USER_COLLECTION_FILE = os.path.join(CACHE_DIR, "user_collection.xml")
     GEEKLIST_ITEMS_FILE = os.path.join(CACHE_DIR, "geeklist_items.json")

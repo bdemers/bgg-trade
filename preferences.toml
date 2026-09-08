@@ -1,0 +1,241 @@
+# Taste preferences for the math trade matcher.
+#
+# Everything the recommender believes about you lives here, not in the code.
+# Edit and re-run ./run.sh -- no refresh needed, scoring is local.
+
+[profile]
+# Which of your own games get to define "your taste".
+max_games = 80          # cap on the profile; ties used to be broken by dict order
+owned = 1.0             # you own it, not offered in this trade, not for trade
+wishlist = 3.0          # on your wishlist/want list (x priority boost)
+rating_min = 7.5        # ratings at or above this add (rating - 6.0) * 1.5
+
+# Plays are the strongest evidence of what actually works at your table,
+# but raw counts let one game dominate, so each play is worth a little
+# and the total contribution is capped.
+plays_per_play = 0.25
+plays_cap = 3.0
+
+# Games you have said outright are favorites. These bypass every other
+# signal, because play count measures what is easy to schedule, not what
+# you love. Root and Terraforming Mars rank #42 and #36 by plays.
+[profile.favorites]
+"237182" = 4.0          # Root
+"167791" = 4.0          # Terraforming Mars
+"342942" = 2.0          # Ark Nova (same lane, not owned)
+
+[weights]
+# Any mechanic not listed below scores this. Keep it low but non-zero.
+mechanic_default = 0.2
+
+# How the three components combine into a similarity score.
+category_share = 0.4
+mechanic_share = 0.4
+designer_share = 0.2
+
+[weights.mechanics]
+# Weights below come from your own ranking of the 15 consolidated groups.
+# "Love it" -> 3.0, "like it" -> 2.0, neutral -> ~1.2, "meh alone" -> ~0.9
+# (those also appear in [pairing.supporting]), "avoid" -> [dislikes].
+
+# --- LOVE: asymmetric powers / variable setup  (group 6)
+"Variable Player Powers" = 3.0
+"Variable Set-up" = 2.6
+"Once-Per-Game Abilities" = 2.2
+
+# --- LOVE: worker placement  (group 8)
+"Worker Placement" = 3.0
+"Worker Placement, Different Worker Types" = 3.0
+"Worker Placement with Dice Workers" = 2.6
+"Action Retrieval" = 2.4
+"Turn Order: Claim Action" = 2.0
+
+# --- LOVE: campaign / legacy / scenario  (group 11)
+"Scenario / Mission / Campaign Game" = 3.0
+"Legacy Game" = 3.0
+"Narrative Choice / Paragraph" = 2.4
+"Storytelling" = 2.0
+
+# --- LIKE A LOT: engine building / economy  (group 2)
+"Contracts" = 2.5
+"Income" = 2.5
+"Tags" = 2.5
+"End Game Bonuses" = 2.2
+"Increase Value of Unchosen Resources" = 2.0
+"Investment" = 2.0
+"Market" = 2.0
+
+# --- LIKE: area control (9), deck building (13), cooperative (14)
+"Area Majority / Influence" = 2.0
+"Area Movement" = 1.8
+"Enclosure" = 1.8
+"Territory Building" = 1.8
+"Deck, Bag, and Pool Building" = 2.0
+"Deck Construction" = 2.0
+"Cooperative Game" = 2.0
+"Semi-Cooperative Game" = 1.8
+"Traitor Game" = 1.8
+
+# --- MIDDLE: tile laying / spatial puzzle  (group 1, "better when paired")
+"Tile Placement" = 1.4
+"Pattern Building" = 1.4
+"Modular Board" = 1.4
+"Grid Coverage" = 1.3
+"Hexagon Grid" = 1.2
+"Square Grid" = 1.1
+"Connections" = 1.1
+# Route building is split out of group 1 on purpose: it is Ticket to Ride's
+# signature and you have enough of those. Say the word to fold it back in.
+"Network and Route Building" = 0.6
+
+# --- MIDDLE: drafting (4) and hand/card management (5), "not going to excite me"
+"Open Drafting" = 1.2
+"Closed Drafting" = 1.2
+"Hand Management" = 1.2
+"Multi-Use Cards" = 1.4
+
+# --- MEH ALONE: set collection (3), dice (7), auction/negotiation (12)
+# Judged by your examples: Roll Player and Sagrada are dice-as-puzzle, so
+# Dice Rolling earns its keep only alongside a core mechanic.
+"Set Collection" = 0.9
+"Dice Rolling" = 1.0
+"Die Icon Resolution" = 1.0
+"Push Your Luck" = 0.9
+"Auction/Bidding" = 0.7
+"Negotiation" = 0.8
+"Trading" = 0.8
+
+# --- WITHIN REASON: direct conflict  (group 10)
+"Take That" = 0.8
+"Battle Card Driven" = 1.0
+"Player Elimination" = 0.6
+
+"Solo / Solitaire Game" = 0.8
+
+[pairing]
+# Several of your answers were "meh by itself, but good coupled with something
+# else". Scoring is otherwise flat and additive, so this expresses it:
+# a supporting mechanic scores at full weight only when the game ALSO brings
+# at least one core mechanic. Alone, it is scaled down.
+enabled = true
+unpaired_factor = 0.4
+
+supporting = [
+  "Set Collection", "Tile Placement", "Pattern Building", "Grid Coverage",
+  "Square Grid", "Connections", "Dice Rolling", "Die Icon Resolution",
+  "Push Your Luck", "Hand Management", "Open Drafting", "Closed Drafting",
+  "Auction/Bidding", "Negotiation", "Trading",
+]
+
+core = [
+  "Variable Player Powers", "Variable Set-up", "Once-Per-Game Abilities",
+  "Worker Placement", "Worker Placement, Different Worker Types",
+  "Worker Placement with Dice Workers", "Action Retrieval",
+  "Scenario / Mission / Campaign Game", "Legacy Game",
+  "Narrative Choice / Paragraph",
+  "Contracts", "Income", "Tags", "End Game Bonuses",
+  "Increase Value of Unchosen Resources",
+  "Area Majority / Influence", "Area Movement", "Territory Building",
+  "Deck, Bag, and Pool Building", "Deck Construction",
+  "Cooperative Game", "Multi-Use Cards",
+]
+
+[dislikes]
+# Group 15 was "avoid". Unlike a 0.0 weight, which merely makes a mechanic
+# invisible, these multiply the final score. The strongest match wins;
+# they do not stack.
+[dislikes.mechanics]
+"Action / Dexterity" = 0.3
+"Flicking" = 0.3
+"Stacking and Balancing" = 0.3
+"Acting" = 0.25
+"Singing" = 0.25
+"Memory" = 0.35
+"Roll / Spin and Move" = 0.3
+
+[gateway]
+# You have enough family and gateway games. These are a "no" by default
+# rather than neutral -- unless the specific copy is exceptional (below).
+#
+# Detection is by category and mechanic, deliberately NOT by playtime:
+# Splendor is a 30-minute game you like, so a length rule would misfire.
+enabled = true
+penalty = 0.45          # multiplier on the final score when it trips
+
+categories = [
+  "Party Game",
+  "Children's Game",
+  "Trivia",
+  "Word Game",
+  "Memory",
+  "Action / Dexterity",
+]
+
+# Dexterity and party mechanics moved to [dislikes.mechanics], which applies a
+# graded penalty instead of this flat one. Route building stays: it is the
+# Ticket to Ride signature, and an exceptional edition still overrides it.
+mechanics = [
+  "Network and Route Building",
+]
+
+[gateway.exceptional]
+# An exceptional edition cancels the gateway penalty entirely:
+# a rare or premium printing, or a Legacy variant that is a heavier game.
+# You cited the Ticket to Ride 10th Anniversary and Legacy editions.
+#
+# A bare title match is not enough. "Deluxe Camping" (rank 17472) and
+# "Halloween: Limited Edition Dice" both match on words alone, so the
+# override also requires the item to clear a quality bar.
+min_rating = 7.0
+max_rank = 2500         # either condition satisfies it
+
+patterns = [
+  "anniversar",
+  "\\blegacy\\b",
+  "\\bdeluxe\\b",
+  "\\bpremium\\b",
+  "collector",
+  "\\bbig box\\b",
+  "master set",
+  "limited edition",
+  "kickstarter edition",
+  "\\bgold edition\\b",
+]
+
+[reimplementation]
+# Games that redo something already on your shelf, e.g. Century: Golem Edition
+# - Eastern Mountains reimplements Century: Eastern Wonders.
+#
+# Demoted, never filtered. Ticket to Ride Legacy "reimplements" Ticket to Ride
+# by BGG's data, and it is exactly the thing you said you would want, so a hard
+# filter would delete the best find in the report. The row always stays visible
+# and flagged so you can overrule it by eye.
+# OFF. Tried and rejected: it was too blunt. Demoting on "reimplements a game
+# you own" also sank Wingspan Pocket, Caverna, Wyrmspan and LotR: Duel for
+# Middle-earth, all of which are worth trying. A narrower "same product line"
+# variant was tested too and still dropped Wingspan Pocket, so both are off.
+#
+# Flip enabled back to true to re-enable; the code path is intact.
+enabled = false
+penalty = 0.5
+
+# An exceptional edition (anniversary, Legacy, deluxe) keeps its full score.
+exempt_exceptional = true
+
+# Only true reimplementations. boardgameintegration is deliberately excluded:
+# that marks games designed to combine, which is a different relationship.
+link_types = ["reimplements"]
+
+# Set penalty = 1.0 or enabled = false to switch this off entirely.
+
+[scoring]
+# Similarity is multiplied by this once the components are combined.
+scale = 10.0
+avoidance_share = 0.25  # how much the "games I'm trading away" profile subtracts
+expansion_bonus = 3.0   # expands a game you own
+score_cap = 12.0
+
+[candidates]
+# Which trade items are worth fetching details for at all.
+min_bgg_rating = 6.0
+max_bgg_rank = 6000

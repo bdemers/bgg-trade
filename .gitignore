@@ -1,2 +1,14 @@
-june-2026-us-math-trade--379213
+# Cached BGG data, one directory per geeklist
+geeklist-*/
+june-2026-us-math-trade--379213/
+
+__pycache__/
+
+# Generated reports
+matching_report.md
+matching_report.html
+
+# Local credentials. .env.example is the committed template.
 .env
+.env.*
+!.env.example
