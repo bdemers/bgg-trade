@@ -1,6 +1,41 @@
 # BGG Math Trade Helper
 
-This repository contains tools for participating in BoardGameGeek (BGG) Math Trades, specifically optimized for importing games and matching trade lists against your personal preferences and wishlist.
+A BoardGameGeek math trade can list thousands of games. These tools read the
+list, match it against your collection, wishlist and play history, and tell you
+which few dozen are worth your attention. They also post your own games to the
+trade without doing it by hand.
+
+Python 3.11+, standard library only, nothing to install.
+
+## Quick start
+
+```bash
+cp .env.example .env
+$EDITOR .env        # geeklist ID, your BGG username + numeric user ID, session cookie
+
+./run.sh --refresh-collection --refresh-geeklist
+open matching_report.html
+```
+
+The first run against a busy trade fetches details for every candidate game and
+takes a few minutes. After that it is cached, and re-running is instant.
+
+Then tune it, which is the part that matters:
+
+```bash
+$EDITOR preferences.toml   # ships with one person's taste; make it yours
+./run.sh                   # rescore from cache, ~15 seconds
+```
+
+Two things that trip people up on the first try:
+
+* `GEEK_SESSION` expires within hours. If you get a 401, get a fresh cookie.
+* `BGG_USER_ID` is the **numeric** ID, not your username. Both are needed.
+
+To put your own games up for trade instead, jump to
+[Importing Your Games](#2-importing-your-games-to-the-trade).
+
+---
 
 ## Features
 
@@ -15,14 +50,11 @@ This repository contains tools for participating in BoardGameGeek (BGG) Math Tra
 
 ---
 
-## Requirements
-
-Python 3.11 or newer, for `tomllib`. No third-party packages; everything uses
-the standard library, so there is nothing to `pip install`.
-
----
-
 ## Setup
+
+Python 3.11 or newer is required, for `tomllib`. There are no third-party
+packages.
+
 
 ### 1. Credentials and IDs
 
