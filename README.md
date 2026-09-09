@@ -43,6 +43,7 @@ To put your own games up for trade instead, jump to
    - Matches a math trade geeklist against your personal collection and wishlist.
    - Builds a preference profile based on your highly rated and owned games.
    - Generates a tailored recommendation report listing **Wishlist Matches** and **Similar Game Recommendations** (highlighting matching mechanics and why you'd like them).
+   - Prices the shortlist from the BGG marketplace and works out a **floor** per game you are offering, so you never trade down.
    - Caches BGG game details locally to avoid rate-limiting and enable instant re-running.
 
 2. **Geeklist Importer (`add_games.sh` / `generate_curl_script.py` / `games.md`)**
@@ -91,6 +92,28 @@ example, so **edit it before trusting the output**. Every section is commented.
 
 Scoring is entirely local, so re-running after an edit takes about 15 seconds.
 
+### 3. What you will accept
+
+Liking a game is not the same as wanting to swap yours for it. The `[trade]`
+section sets the floor a want has to clear:
+
+```
+floor = max(market price x ratio, absolute_min) + postage
+```
+
+Market price is the median USD asking price on the BGG marketplace, fetched for
+the shortlist and cached. Postage is in there because you ship a box either
+way: trading a $20 game for an $18 game and paying $10 to mail it is a loss,
+however much you like the $18 game.
+
+The report then prints, for each game you are offering, its floor and every
+candidate that clears it. That table is your want list in waiting.
+
+Two knobs worth knowing:
+
+* `[trade.postage_overrides]` raises postage per BGG ID, for the heavy boxes.
+* `accept_below_floor` lists BGG IDs you want regardless of price. Keep it short.
+
 ---
 
 ## Usage
@@ -115,13 +138,18 @@ A helper script `run.sh` is provided to run the matching tool:
   ```bash
   ./run.sh --refresh-collection --refresh-geeklist
   ```
+* **Refresh cached marketplace prices** (they go stale, the rest does not):
+  ```bash
+  ./run.sh --refresh-prices
+  ```
 
-Two reports are written on every run, with identical content. Both are
-gitignored, since they are regenerated output:
+Three files are written on every run, all gitignored, since they are
+regenerated output:
 
 * `matching_report.md` for reading in an editor.
 * `matching_report.html`, a standalone page with styled tables and dark mode.
   Open it with `open matching_report.html`.
+* `wants_plan.json`, the same accept sets in machine-readable form.
 
 Cached BGG data lands in `geeklist-<ID>/`, also gitignored. A first run against
 a busy trade fetches details for every candidate game and takes several minutes;

@@ -18,6 +18,9 @@ Hello! If you are an AI assistant working on this repository, please review thes
   * `user_collection.xml`: Cached BGG user collection XML.
   * `geeklist_items.json`: Cache of geeklist listitems.
   * `game_details/`: Cached game details (categories, mechanics, designers) per BGG ID.
+  * `prices.json`: Median USD marketplace price per BGG ID. See "Valuing a trade".
+* `wants_plan.json`: **Generated.** The accept set per item you are offering,
+  written next to the reports and gitignored like them.
 
 No cache directory exists in the working tree right now, so the next `./run.sh`
 will do a full download before it can match anything.
@@ -107,6 +110,25 @@ IDs, fetch them directly. It is far cheaper than paging the whole list.
 key holding `id`, `listid`, and `item.name`. `add_games.sh` treats 201 and 200
 as success and warns on anything else (`add_games.sh:65-67`).
 
+**Marketplace prices (public):**
+`https://api.geekdo.com/api/market/products?objectid=<bgg_id>&objecttype=thing&showcount=25`
+(`bgg_match.py`, `fetch_market_price`). Worth writing down:
+
+* It is **public**. No `Authorization` header, no cookie, unlike `xmlapi2`,
+  which now 401s even for `thing`. This is the only price source that still
+  answers, and `geekitems` carries no price data at all.
+* `products[]` entries hold `price`, `currency`, `prettycondition`,
+  `itemlocation`. `config.numitems` is the total listing count.
+* Only USD listings are used. A median across mixed currencies is meaningless,
+  and dropping the rest still leaves ~20 listings for most games.
+* `showcount` caps the page. Every listing drags a full image set with it, so
+  the default 50 is close to a megabyte per game. 25 halves that and moved the
+  median by at most $2.50 on the games it was checked against.
+* Responses are **chunked and sometimes truncate**, which surfaces as
+  `json.JSONDecodeError: Expecting value: line 1 column 446034`. It is transient.
+  The JSON parse therefore sits *inside* the retry loop, not after it. Thirteen
+  of 170 games failed on the first build of this, and none did after the fix.
+
 **Rate limiting:** keep a small sleep between calls to `api.geekdo.com` to avoid
 Cloudflare challenges and 429s. The reader uses 0.3s between geeklist pages
 (`bgg_match.py:251`) and 0.2s between detail fetches (`bgg_match.py:285`). The
@@ -166,6 +188,42 @@ prevent, so route every hold through `games.md`.
   (`bgg_match.py:645-674`).
 - Junior and kids editions of games you already own are filtered out
   (`bgg_match.py:445-481`).
+
+## Valuing a Trade
+
+`[trade]` in `preferences.toml` decides what you will accept for each item you
+are offering:
+
+```
+floor = max(market price x ratio, absolute_min) + postage
+```
+
+The reasoning behind that shape, so nobody re-litigates it:
+
+* **Postage is in the formula because you ship a box either way.** Trading a $20
+  game for an $18 game and paying $10 to mail it is a loss, however much you
+  like the $18 game. `[trade.postage_overrides]` raises it per BGG ID for the
+  heavy boxes.
+* **Price comes from the marketplace, not from a heuristic.** A tier function
+  over BGG rank, rating, year and play time was built first and thrown away.
+  Rank measures quality, not price: it put Pandemic at $40 and Santorini at $25
+  when the marketplace says $18 and $15. Popular evergreen games are cheap
+  because they are printed forever. Do not reintroduce rank as a price proxy.
+* **Only the shortlist gets priced**, `price_top_n` recommendations plus every
+  wishlist match plus your own items. The trade has thousands of items and
+  almost none are candidates.
+* **`accept_below_floor` is the escape hatch**, by BGG ID, for a game you want
+  regardless of what it sells for. Keep it short. It exists because a wishlisted
+  game can be genuinely cheap: House of Danger sells for $5.
+* **An item with no USD listings** falls back to `unpriced_floor` rather than to
+  postage alone, and the report flags it with ⚠️.
+
+Order inside an accept set does not matter. This trade runs TradeMaximizer with
+no priority scheme (`379213-officialwants.txt` lists `ALLOW-DUMMIES
+REQUIRE-COLONS REQUIRE-USERNAMES HIDE-NONTRADES SHOW-ELAPSED-TIME ITERATIONS=75
+SEED=20260621 METRIC=Users-Trading`, and TradeMaximizer defaults to no
+priorities). So a want list is a **set, not a ranking**: everything you list is
+equally likely, which is why the floor has to do the work.
 
 ## Known Rough Edges
 - The geeklist item author is read by fixed index, `links[2]`

@@ -7,6 +7,7 @@ __pycache__/
 # Generated reports
 matching_report.md
 matching_report.html
+wants_plan.json
 
 # Local credentials. .env.example is the committed template.
 .env

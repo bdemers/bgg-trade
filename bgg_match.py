@@ -5,6 +5,7 @@ import sys
 import json
 import time
 import argparse
+import statistics
 import urllib.request
 import urllib.parse
 import xml.etree.ElementTree as ET
@@ -16,6 +17,7 @@ CACHE_DIR = ""
 GAME_DETAILS_DIR = ""
 USER_COLLECTION_FILE = ""
 GEEKLIST_ITEMS_FILE = ""
+PRICE_CACHE_FILE = ""
 
 def load_env():
     """Load variables from .env file if it exists."""
@@ -45,6 +47,9 @@ DEFAULT_PREFS = {
     "scoring": {"scale": 10.0, "avoidance_share": 0.25,
                 "expansion_bonus": 3.0, "score_cap": 12.0},
     "candidates": {"min_bgg_rating": 6.0, "max_bgg_rank": 6000},
+    "trade": {"enabled": True, "postage": 10.0, "ratio": 1.0, "absolute_min": 0.0,
+              "unpriced_floor": 20.0, "price_top_n": 150, "accept_below_floor": [],
+              "postage_overrides": {}},
 }
 
 
@@ -367,6 +372,166 @@ def get_game_details(bgg_id, auth_headers=None):
     except Exception as e:
         print(f"  Failed to get details for game {bgg_id}: {e}")
         return None
+
+# Marketplace listings read per game. See fetch_market_price for why it is 25.
+MARKET_LISTINGS = 25
+
+
+def load_price_cache():
+    """Prices live beside the other caches, keyed by BGG id."""
+    if PRICE_CACHE_FILE and os.path.exists(PRICE_CACHE_FILE):
+        try:
+            with open(PRICE_CACHE_FILE, 'r', encoding='utf-8') as f:
+                return json.load(f)
+        except Exception:
+            pass  # Rebuild if corrupt
+    return {}
+
+
+def save_price_cache(prices):
+    if PRICE_CACHE_FILE:
+        with open(PRICE_CACHE_FILE, 'w', encoding='utf-8') as f:
+            json.dump(prices, f, indent=1, sort_keys=True)
+
+
+def fetch_market_price(bgg_id, attempts=3):
+    """Median USD asking price from the BGG marketplace.
+
+    api.geekdo.com/api/market/products is public: it answers with no
+    Authorization header and no cookie, unlike the xmlapi2 endpoints.
+
+    showcount caps the listings returned. Every listing drags its image set
+    along, so the default page of 50 is close to a megabyte per game; 25 halves
+    that and moved the median by at most $2.50 across the games it was checked
+    on. The responses are chunked and do come back truncated now and then, so
+    the JSON parse is inside the retry rather than after it.
+
+    Non-USD listings are dropped rather than converted. A median across mixed
+    currencies is not a number, and this trade is US-only anyway.
+    """
+    url = (f"https://api.geekdo.com/api/market/products"
+           f"?objectid={bgg_id}&objecttype=thing&showcount={MARKET_LISTINGS}")
+    data = None
+    for attempt in range(attempts):
+        try:
+            data_bytes, _ = make_bgg_request(url, retries=2, delay=1)
+            data = json.loads(data_bytes.decode('utf-8', errors='replace'))
+            break
+        except Exception as e:
+            if attempt == attempts - 1:
+                print(f"  Failed to price game {bgg_id}: {e}")
+                return None
+            time.sleep(1 + attempt)
+
+    usd = [float(p['price']) for p in data.get('products', [])
+           if p.get('currency') == 'USD' and p.get('price')]
+    return {
+        'median': round(statistics.median(usd), 2) if usd else None,
+        'usd_listings': len(usd),
+        'total_listings': (data.get('config') or {}).get('numitems', 0),
+        'fetched': int(time.time()),
+    }
+
+
+def price_games(bgg_ids, force=False):
+    """Fetch and cache market prices for a set of games."""
+    prices = load_price_cache()
+    todo = [g for g in bgg_ids if force or g not in prices]
+    if not todo:
+        print(f"Using cached market prices for {len(bgg_ids)} games.")
+        return prices
+
+    print(f"Pricing {len(todo)} games from the BGG marketplace...")
+    start = time.time()
+    for idx, gid in enumerate(todo):
+        if idx % 20 == 0 and idx > 0:
+            rate = idx / (time.time() - start)
+            print(f"  Priced {idx}/{len(todo)} (Estimated time remaining: {int((len(todo) - idx) / rate)}s)...")
+            save_price_cache(prices)  # Checkpoint, so an interrupted run is not wasted
+        result = fetch_market_price(gid)
+        if result:
+            prices[gid] = result
+        time.sleep(0.35)  # Same politeness as the other api.geekdo.com calls
+    save_price_cache(prices)
+    print(f"Priced {len(todo)} games.")
+    return prices
+
+
+def market_price(gid, prices):
+    """The median USD price for a game, or None when nobody is selling it."""
+    return (prices.get(str(gid)) or {}).get('median')
+
+
+def compute_floors(geeklist, offered_game_ids, prices):
+    """What each of your items has to earn before a trade is worth making.
+
+    floor = max(market price x ratio, absolute_min) + postage
+
+    Postage is in there because you ship a box either way. A swap that lands
+    you a game worth less than what you gave up plus the postage is a loss,
+    even when the other side is a game you quite like.
+    """
+    cfg = PREFS['trade']
+    overrides = {str(k): float(v) for k, v in (cfg.get('postage_overrides') or {}).items()}
+
+    titles = {}
+    for item in geeklist:
+        gid = (item.get('item') or {}).get('id')
+        if gid in offered_game_ids:
+            titles.setdefault(gid, (item.get('item') or {}).get('name', 'Unknown'))
+
+    floors = []
+    for gid in sorted(offered_game_ids, key=lambda g: -(market_price(g, prices) or 0)):
+        price = market_price(gid, prices)
+        postage = overrides.get(str(gid), float(cfg['postage']))
+        base = (price if price is not None else float(cfg['unpriced_floor'])) * float(cfg['ratio'])
+        floors.append({
+            'id': gid,
+            'title': titles.get(gid, 'Unknown'),
+            'price': price,
+            'postage': postage,
+            'floor': round(max(base, float(cfg['absolute_min'])) + postage, 2),
+            'unpriced': price is None,
+        })
+    return floors
+
+
+def build_trade_plan(floors, wishlist, recommendations, prices):
+    """For each of your items, the games in the trade that clear its floor.
+
+    This is the want list in waiting: one accept set per item you are offering.
+    Order inside a set does not matter, because this trade runs TradeMaximizer
+    without a priority scheme, so every listed want is equally likely.
+    """
+    exceptions = {str(g) for g in (PREFS['trade'].get('accept_below_floor') or [])}
+
+    candidates = []
+    for r in wishlist + recommendations:
+        candidates.append({
+            'id': r['id'],
+            'title': r['title'],
+            'match_type': r['match_type'],
+            'score': r['final_score'],
+            'price': market_price(r['id'], prices),
+            'copies': len(r['trade_instances']),
+            'listitem_ids': [inst['listitem_id'] for inst in r['trade_instances']],
+        })
+
+    plan = {'my_items': [], 'unpriced_candidates': [c['title'] for c in candidates if c['price'] is None]}
+    for f in floors:
+        accepted, rejected = [], []
+        for c in candidates:
+            if str(c['id']) in exceptions:
+                accepted.append(dict(c, exception=True))
+            elif c['price'] is not None and c['price'] >= f['floor']:
+                accepted.append(dict(c, exception=False))
+            else:
+                rejected.append(c)
+        # Wishlist first, then by how well the recommender liked it.
+        accepted.sort(key=lambda c: (c['match_type'] != 'wishlist', -c['score']))
+        plan['my_items'].append(dict(f, accepts=accepted, rejected_count=len(rejected)))
+    return plan
+
 
 def build_user_profile(collection, offered_game_ids, auth_headers=None):
     """Build a profile of the user's liked mechanics, categories, and designers, as well as disliked ones."""
@@ -925,6 +1090,7 @@ body { margin:0 auto; padding:2rem 1.25rem; max-width:1200px; color:var(--fg);
 h1 { font-size:1.6rem; margin:0 0 .75rem; }
 h2 { font-size:1.2rem; margin:2rem 0 .75rem; padding-bottom:.3rem;
      border-bottom:1px solid var(--line); }
+h3 { font-size:1.02rem; margin:1.5rem 0 .5rem; color:var(--fg); }
 a { color:var(--link); text-decoration:none; }
 a:hover { text-decoration:underline; }
 p { margin:.5rem 0; }
@@ -968,7 +1134,9 @@ def markdown_to_html(md, title):
             i += 1
             continue
 
-        if stripped.startswith("## "):
+        if stripped.startswith("### "):
+            body.append(f"<h3>{_inline(stripped[4:])}</h3>")
+        elif stripped.startswith("## "):
             body.append(f"<h2>{_inline(stripped[3:])}</h2>")
         elif stripped.startswith("# "):
             body.append(f"<h1>{_inline(stripped[2:])}</h1>")
@@ -1017,8 +1185,53 @@ def markdown_to_html(md, title):
     )
 
 
-def generate_reports(wishlist, recommendations, username, geeklist_title=None):
+def _money(value):
+    return f"${value:,.0f}" if value is not None else "—"
+
+
+def render_trade_plan(plan):
+    """The floor table and the per-item accept lists, as markdown."""
+    cfg = PREFS['trade']
+    out = "## 💵 What a Trade Has to Beat\n\n"
+    out += (f"A want has to be worth at least what you give up plus the postage on the box "
+            f"you ship (`floor = market price x {cfg['ratio']} + postage`). "
+            f"Prices are median USD asking prices from the BGG marketplace.\n\n")
+    out += "| Your Item | Market | Postage | Floor | Clears Floor |\n"
+    out += "| :--- | ---: | ---: | ---: | ---: |\n"
+    for item in plan['my_items']:
+        title = item['title'] + (" ⚠️" if item['unpriced'] else "")
+        copies = sum(c['copies'] for c in item['accepts'])
+        out += (f"| {title} | {_money(item['price'])} | {_money(item['postage'])} "
+                f"| **{_money(item['floor'])}** | {len(item['accepts'])} games, {copies} copies |\n")
+    out += "\n"
+    if any(i['unpriced'] for i in plan['my_items']):
+        out += "⚠️ = no USD listings on the marketplace, so the floor fell back to `unpriced_floor`.\n\n"
+    if plan['unpriced_candidates']:
+        out += (f"*{len(plan['unpriced_candidates'])} candidate games have no USD listing and were "
+                f"left out of every accept list.*\n\n")
+
+    out += "## 📋 Want List Plan\n\n"
+    out += ("One accept set per item you are offering. Order does not matter: this trade runs "
+            "without a priority scheme, so every listed want is equally likely.\n\n")
+    for item in plan['my_items']:
+        out += f"### {item['title']} — floor {_money(item['floor'])}\n\n"
+        if not item['accepts']:
+            out += "*Nothing in the trade clears this floor.*\n\n"
+            continue
+        out += "| Market | Score | Game | Copies |\n| ---: | ---: | :--- | ---: |\n"
+        for c in item['accepts']:
+            tag = " 🎯" if c['match_type'] == 'wishlist' else ""
+            tag += " ⭐" if c.get('exception') else ""
+            game_link = f"[{c['title']}](https://boardgamegeek.com/boardgame/{c['id']})"
+            out += f"| {_money(c['price'])} | {c['score']} | {game_link}{tag} | {c['copies']} |\n"
+        out += f"\n*{item['rejected_count']} candidates fell below this floor.*\n\n"
+    return out
+
+
+def generate_reports(wishlist, recommendations, username, geeklist_title=None,
+                     plan=None, prices=None):
     """Write the matching report to markdown and to a standalone HTML page."""
+    prices = prices or {}
     if not geeklist_title:
         geeklist_title = f"Geeklist {GEEKLIST_ID}"
     report_content = f"# BGG Math Trade Matching Report\n\n"
@@ -1028,20 +1241,26 @@ def generate_reports(wishlist, recommendations, username, geeklist_title=None):
     
     report_content += "This report matches items from the Math Trade against your BoardGameGeek collection.\n"
     report_content += "- **Wishlist Matches** are items explicitly on your wishlist or want list.\n"
-    report_content += "- **Recommendations** are other highly-rated games in the trade that match the mechanics, categories, and designers of games you highly rate or own.\n\n"
-    
+    report_content += "- **Recommendations** are other highly-rated games in the trade that match the mechanics, categories, and designers of games you highly rate or own.\n"
+    report_content += "- **Market** is the median USD asking price on the BGG marketplace, used to floor what you will accept.\n\n"
+
+    # 0. The floor table and the accept sets it produces
+    if plan:
+        report_content += render_trade_plan(plan)
+
     # 1. Wishlist Matches Table
     report_content += "## 🎯 Wishlist & Want List Matches\n\n"
     if not wishlist:
         report_content += "*No wishlist matches found in this trade list.*\n\n"
     else:
-        report_content += "| Game | Priority | BGG Rating | Trade Instances (Author & Item Link) |\n"
-        report_content += "| :--- | :---: | :---: | :--- |\n"
+        report_content += "| Game | Priority | Market | BGG Rating | Trade Instances (Author & Item Link) |\n"
+        report_content += "| :--- | :---: | ---: | :---: | :--- |\n"
         for r in wishlist:
             prio_str = f"Prio {r['wishlist_priority']}" if r['wishlist_priority'] > 0 else "Want"
             game_link = f"[{r['title']}](https://boardgamegeek.com/boardgame/{r['id']})"
             instances_str = ", ".join([f"[{inst['author']}]({inst['href']})" for inst in r['trade_instances']])
-            report_content += f"| {game_link} | `{prio_str}` | {r['bgg_rating']} | {instances_str} |\n"
+            report_content += (f"| {game_link} | `{prio_str}` | {_money(market_price(r['id'], prices))} "
+                               f"| {r['bgg_rating']} | {instances_str} |\n")
         report_content += "\n"
         
     # 2. Recommendations Table
@@ -1053,8 +1272,8 @@ def generate_reports(wishlist, recommendations, username, geeklist_title=None):
     else:
         # Show top 100 recommendations
         top_recs = recommendations[:100]
-        report_content += "| Score | Game | Why you'd like it | BGG Rating | Trade Instances |\n"
-        report_content += "| :---: | :--- | :--- | :---: | :--- |\n"
+        report_content += "| Score | Market | Game | Why you'd like it | BGG Rating | Trade Instances |\n"
+        report_content += "| :---: | ---: | :--- | :--- | :---: | :--- |\n"
         for r in top_recs:
             game_link = f"[{r['title']}](https://boardgamegeek.com/boardgame/{r['id']})"
             
@@ -1066,9 +1285,15 @@ def generate_reports(wishlist, recommendations, username, geeklist_title=None):
                 reason += f"<br>*{'; '.join(r['flags'])}*"
                 
             instances_str = ", ".join([f"[{inst['author']}]({inst['href']})" for inst in r['trade_instances']])
-            report_content += f"| **{r['final_score']}** | **{game_link}** | {reason} | {r['bgg_rating']} | {instances_str} |\n"
+            report_content += (f"| **{r['final_score']}** | {_money(market_price(r['id'], prices))} "
+                               f"| **{game_link}** | {reason} | {r['bgg_rating']} | {instances_str} |\n")
         report_content += "\n"
         
+    if plan:
+        with open("wants_plan.json", 'w', encoding='utf-8') as f:
+            json.dump(plan, f, indent=2, ensure_ascii=False)
+        print("Saved want list plan: wants_plan.json")
+
     local_report_path = "matching_report.md"
     with open(local_report_path, 'w', encoding='utf-8') as f:
         f.write(report_content)
@@ -1082,6 +1307,7 @@ def generate_reports(wishlist, recommendations, username, geeklist_title=None):
 
 def main():
     global GEEKLIST_ID, CACHE_DIR, GAME_DETAILS_DIR, USER_COLLECTION_FILE, GEEKLIST_ITEMS_FILE
+    global PRICE_CACHE_FILE
     
     # Load env variables (e.g. from .env file or environment)
     load_env()
@@ -1095,6 +1321,7 @@ def main():
     parser.add_argument("--cache-dir", default=None, help="Custom cache directory")
     parser.add_argument("--refresh-collection", action="store_true", help="Force refresh of user collection")
     parser.add_argument("--refresh-geeklist", action="store_true", help="Force refresh of math trade geeklist items")
+    parser.add_argument("--refresh-prices", action="store_true", help="Force refresh of cached marketplace prices")
     args = parser.parse_args()
     
     if not args.geeklist:
@@ -1108,7 +1335,8 @@ def main():
     GAME_DETAILS_DIR = os.path.join(CACHE_DIR, "game_details")
     USER_COLLECTION_FILE = os.path.join(CACHE_DIR, "user_collection.xml")
     GEEKLIST_ITEMS_FILE = os.path.join(CACHE_DIR, "geeklist_items.json")
-    
+    PRICE_CACHE_FILE = os.path.join(CACHE_DIR, "prices.json")
+
     os.makedirs(GAME_DETAILS_DIR, exist_ok=True)
     
     print("==================================================")
@@ -1140,13 +1368,32 @@ def main():
         
         # Extract title from geeklist
         geeklist_title = get_geeklist_title_from_items(geeklist)
-        
-        # 5. Generate Reports
-        generate_reports(wishlist, recommendations, args.username, geeklist_title)
-        
+
+        # 5. Price the shortlist and work out what each of your items can accept.
+        #    Only the games that made the report get priced; the trade has
+        #    thousands of items and almost none of them are candidates.
+        plan, prices = None, {}
+        if PREFS['trade'].get('enabled', True) and offered_game_ids:
+            shortlist = ([r['id'] for r in wishlist]
+                         + [r['id'] for r in recommendations[:PREFS['trade']['price_top_n']]])
+            prices = price_games(sorted(set(shortlist) | set(offered_game_ids)),
+                                 force=args.refresh_prices)
+            floors = compute_floors(geeklist, offered_game_ids, prices)
+            plan = build_trade_plan(floors, wishlist,
+                                    recommendations[:PREFS['trade']['price_top_n']], prices)
+        elif not offered_game_ids:
+            print("No items of your own found in this trade, so no floors were computed.")
+
+        # 6. Generate Reports
+        generate_reports(wishlist, recommendations, args.username, geeklist_title, plan, prices)
+
         print("\nSuccessfully finished matching!")
         print(f"  - Wishlist matches: {len(wishlist)}")
         print(f"  - Top recommendations generated. See matching_report.md for details.")
+        if plan:
+            for item in plan['my_items']:
+                print(f"  - {item['title'][:44]}: floor {_money(item['floor'])}, "
+                      f"{len(item['accepts'])} games clear it")
         print("==================================================")
         
     except Exception as e:
