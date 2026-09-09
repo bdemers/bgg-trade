@@ -46,7 +46,11 @@ To put your own games up for trade instead, jump to
    - Prices the shortlist from the BGG marketplace and works out a **floor** per game you are offering, so you never trade down.
    - Caches BGG game details locally to avoid rate-limiting and enable instant re-running.
 
-2. **Geeklist Importer (`add_games.sh` / `generate_curl_script.py` / `games.md`)**
+2. **Trade Matrix Review (`review.sh` / `review.py`)**
+   - A clickable page for every candidate game against every game you offer, pre-filled from the floors.
+   - Your edits save straight back into the repo as you click, and the next match run folds them in.
+
+3. **Geeklist Importer (`add_games.sh` / `generate_curl_script.py` / `games.md`)**
    - Automates uploading your own games to the BGG Math Trade Geeklist.
 
 ---
@@ -169,7 +173,31 @@ Cached BGG data lands in `geeklist-<ID>/`, also gitignored. A first run against
 a busy trade fetches details for every candidate game and takes several minutes;
 after that, re-running is instant.
 
-### 2. Importing Your Games to the Trade
+### 2. Reviewing the Trade Matrix
+
+```bash
+./review.sh
+```
+
+That opens a page at `http://127.0.0.1:8765` listing every candidate game with
+its cover, price, score and the reason it was recommended. Each row carries one
+chip per game you are offering.
+
+The chips arrive pre-filled from the floors, so an untouched list is already a
+valid want list. You are only there for the disagreements:
+
+* Click a chip to flip one cell, or drag across chips to set a run.
+* `all` and `none` per row, or keys `j`/`k` to move, `1`-`9` to toggle, `a`, `n`.
+* Filter to your wishlist, or to rows you have already edited.
+
+Every click saves to `matrix_overrides.json` in the repo, with no download and
+no copy-paste step. Only deviations from the floor are stored, so re-pricing a
+game or changing a floor in `games.md` still moves every cell you never touched.
+
+Run `./run.sh` afterwards. The report grows a **Your Edits** section listing each
+cell you overruled, what the rule said, and what you said instead.
+
+### 3. Importing Your Games to the Trade
 
 1. Edit [games.md](games.md) with the list of games you wish to put up for trade.
 2. Run `python3 generate_curl_script.py` to regenerate `add_games.sh`.

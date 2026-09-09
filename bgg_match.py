@@ -21,6 +21,10 @@ USER_COLLECTION_FILE = ""
 GEEKLIST_ITEMS_FILE = ""
 PRICE_CACHE_FILE = ""
 
+# Decisions you made in the review page, committed alongside games.md because
+# they are yours rather than derived.
+MATRIX_OVERRIDES_FILE = "matrix_overrides.json"
+
 def load_env():
     """Load variables from .env file if it exists."""
     env_path = ".env"
@@ -527,14 +531,48 @@ def compute_floors(geeklist, offered_game_ids, prices, offerings=None):
     return floors
 
 
-def build_trade_plan(floors, wishlist, recommendations, prices):
-    """For each of your items, the games in the trade that clear its floor.
+def load_overrides(path=MATRIX_OVERRIDES_FILE):
+    """Cells you set by hand in the review page, which beat the floor rule.
 
-    This is the want list in waiting: one accept set per item you are offering.
-    Order inside a set does not matter, because this trade runs TradeMaximizer
-    without a priority scheme, so every listed want is equally likely.
+    Only deviations are stored. A cell you never touched keeps following the
+    floor, so re-pricing a game or editing games.md still moves the untouched
+    parts of the matrix.
+    """
+    if not os.path.exists(path):
+        return {}
+    try:
+        with open(path, 'r', encoding='utf-8') as f:
+            saved = json.load(f)
+    except Exception as e:
+        print(f"Warning: could not read {path} ({e}); ignoring your manual edits.")
+        return {}
+
+    listed = str(saved.get('geeklist') or '')
+    if listed and listed != str(GEEKLIST_ID):
+        print(f"Warning: {path} was written for geeklist {listed}, not {GEEKLIST_ID}. "
+              f"Ignoring it. Move it aside to start this trade fresh.")
+        return {}
+    cells = saved.get('cells') or {}
+    n = sum(len(v) for v in cells.values())
+    if n:
+        print(f"Applying {n} hand-set cells from {path}.")
+    return cells
+
+
+def build_trade_plan(floors, wishlist, recommendations, prices, overrides=None):
+    """The whole matrix: every candidate against every item you are offering.
+
+    `default` is what the floor rule says. `accept` is what you ended up with
+    after your own edits. Keeping both means the report can show where you
+    disagreed with the rule, and the review page can show you what it would
+    have done.
+
+    Order inside an accept set does not matter, because this trade runs
+    TradeMaximizer without a priority scheme, so every listed want is equally
+    likely.
     """
     exceptions = {str(g) for g in (PREFS['trade'].get('accept_below_floor') or [])}
+    overrides = overrides or {}
 
     candidates = []
     for r in wishlist + recommendations:
@@ -543,24 +581,36 @@ def build_trade_plan(floors, wishlist, recommendations, prices):
             'title': r['title'],
             'match_type': r['match_type'],
             'score': r['final_score'],
+            'bgg_rating': r['bgg_rating'],
+            'reason': r.get('reason', ''),
             'price': market_price(r['id'], prices),
             'copies': len(r['trade_instances']),
             'listitem_ids': [inst['listitem_id'] for inst in r['trade_instances']],
+            'default': {},
+            'accept': {},
         })
+    # Wishlist first, then by how well the recommender liked it.
+    candidates.sort(key=lambda c: (c['match_type'] != 'wishlist', -c['score']))
 
-    plan = {'my_items': [], 'unpriced_candidates': [c['title'] for c in candidates if c['price'] is None]}
-    for f in floors:
-        accepted, rejected = [], []
-        for c in candidates:
+    for c in candidates:
+        for f in floors:
             if str(c['id']) in exceptions:
-                accepted.append(dict(c, exception=True))
-            elif c['price'] is not None and c['price'] >= f['floor']:
-                accepted.append(dict(c, exception=False))
+                rule = True
             else:
-                rejected.append(c)
-        # Wishlist first, then by how well the recommender liked it.
-        accepted.sort(key=lambda c: (c['match_type'] != 'wishlist', -c['score']))
-        plan['my_items'].append(dict(f, accepts=accepted, rejected_count=len(rejected)))
+                rule = c['price'] is not None and c['price'] >= f['floor']
+            c['default'][f['id']] = rule
+            c['accept'][f['id']] = bool((overrides.get(c['id']) or {}).get(f['id'], rule))
+
+    plan = {
+        'geeklist': str(GEEKLIST_ID),
+        'my_items': [],
+        'candidates': candidates,
+        'unpriced_candidates': [c['title'] for c in candidates if c['price'] is None],
+    }
+    for f in floors:
+        accepts = [c['id'] for c in candidates if c['accept'][f['id']]]
+        plan['my_items'].append(dict(f, accepts=accepts,
+                                     rejected_count=len(candidates) - len(accepts)))
     return plan
 
 
@@ -1235,9 +1285,10 @@ def render_trade_plan(plan):
             f"both rather than adding them up.\n\n")
     out += "| Your Item | Market | Value | Shipping | Floor | Clears Floor |\n"
     out += "| :--- | ---: | ---: | ---: | ---: | ---: |\n"
+    by_id = {c['id']: c for c in plan['candidates']}
     for item in plan['my_items']:
         title = item['title'] + (" ⚠️" if item['unpriced'] else "")
-        copies = sum(c['copies'] for c in item['accepts'])
+        copies = sum(by_id[cid]['copies'] for cid in item['accepts'])
         pen = " ✍️"
         if item['floor_source'] == 'games.md':
             # An explicit `- Floor:` line is the whole answer, so the value and
@@ -1259,6 +1310,28 @@ def render_trade_plan(plan):
         out += (f"*{len(plan['unpriced_candidates'])} candidate games have no USD listing and were "
                 f"left out of every accept list.*\n\n")
 
+    by_id = {c['id']: c for c in plan['candidates']}
+
+    # Cells where you overruled the floor, listed first because they are the
+    # part of this report nobody can reconstruct from the numbers.
+    edits = []
+    for c in plan['candidates']:
+        for item in plan['my_items']:
+            if c['accept'][item['id']] != c['default'][item['id']]:
+                edits.append((c, item, c['accept'][item['id']]))
+    if edits:
+        out += "## ✍️ Your Edits\n\n"
+        out += (f"{len(edits)} cells where you overruled the floor in the review page "
+                f"(`./review.sh`).\n\n")
+        out += "| Your Item | Floor | Game | Market | Rule said | You said |\n"
+        out += "| :--- | ---: | :--- | ---: | :---: | :---: |\n"
+        for c, item, verdict in edits:
+            game_link = f"[{c['title']}](https://boardgamegeek.com/boardgame/{c['id']})"
+            out += (f"| {item['title']} | {_money(item['floor'])} | {game_link} "
+                    f"| {_money(c['price'])} | {'accept' if not verdict else 'reject'} "
+                    f"| **{'accept' if verdict else 'reject'}** |\n")
+        out += "\n"
+
     out += "## 📋 Want List Plan\n\n"
     out += ("One accept set per item you are offering. Order does not matter: this trade runs "
             "without a priority scheme, so every listed want is equally likely.\n\n")
@@ -1268,12 +1341,13 @@ def render_trade_plan(plan):
             out += "*Nothing in the trade clears this floor.*\n\n"
             continue
         out += "| Market | Score | Game | Copies |\n| ---: | ---: | :--- | ---: |\n"
-        for c in item['accepts']:
+        for cid in item['accepts']:
+            c = by_id[cid]
             tag = " 🎯" if c['match_type'] == 'wishlist' else ""
-            tag += " ⭐" if c.get('exception') else ""
+            tag += " ✍️" if c['accept'][item['id']] != c['default'][item['id']] else ""
             game_link = f"[{c['title']}](https://boardgamegeek.com/boardgame/{c['id']})"
             out += f"| {_money(c['price'])} | {c['score']} | {game_link}{tag} | {c['copies']} |\n"
-        out += f"\n*{item['rejected_count']} candidates fell below this floor.*\n\n"
+        out += f"\n*{item['rejected_count']} candidates are not on this list.*\n\n"
     return out
 
 
@@ -1438,7 +1512,8 @@ def main():
                 print(f"Read hand-set money lines for {stated} of your items from {args.games}.")
             floors = compute_floors(geeklist, offered_game_ids, prices, offerings)
             plan = build_trade_plan(floors, wishlist,
-                                    recommendations[:PREFS['trade']['price_top_n']], prices)
+                                    recommendations[:PREFS['trade']['price_top_n']],
+                                    prices, load_overrides())
         elif not offered_game_ids:
             print("No items of your own found in this trade, so no floors were computed.")
 

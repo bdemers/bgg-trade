@@ -23,8 +23,17 @@ Hello! If you are an AI assistant working on this repository, please review thes
   * `geeklist_items.json`: Cache of geeklist listitems.
   * `game_details/`: Cached game details (categories, mechanics, designers) per BGG ID.
   * `prices.json`: Median USD marketplace price per BGG ID. See "Valuing a trade".
-* `wants_plan.json`: **Generated.** The accept set per item you are offering,
-  written next to the reports and gitignored like them.
+* `wants_plan.json`: **Generated.** The whole matrix, written next to the
+  reports and gitignored like them. `my_items` carries the floors and the
+  accepted candidate ids; `candidates` carries each game once, with `default`
+  (what the floor rule said) and `accept` (what you ended up with) keyed by
+  your item ids.
+* `review.py` / `review.sh`: The matrix review page. Serves a clickable grid on
+  127.0.0.1 and writes your decisions back into the repo.
+* `matrix_overrides.json`: Your hand-set cells. **Committed**, because these are
+  decisions rather than derived data. Only deviations from the floor rule are
+  stored, so untouched cells keep following `games.md`. It records the geeklist
+  it belongs to and is ignored, with a warning, against any other trade.
 
 No cache directory exists in the working tree right now, so the next `./run.sh`
 will do a full download before it can match anything.
@@ -259,6 +268,22 @@ The reasoning behind that shape, so nobody re-litigates it:
   game can be genuinely cheap: House of Danger sells for $5.
 * **An item with no USD listings** falls back to `unpriced_floor` rather than to
   postage alone, and the report flags it with ⚠️.
+
+### The review page
+`review.py` is deliberately dependency-free: `http.server` plus inlined CSS and
+JavaScript, no build step and no CDN. It exists because the matrix is 161 games
+by 9 items, and no CSV or markdown table is a reasonable place to make 1,449
+decisions.
+
+Two design points worth keeping:
+
+* **Only deviations are stored.** A cell that agrees with the floor is deleted
+  from `matrix_overrides.json` rather than written as `true`. That is what lets
+  a change to a floor in `games.md` still move the untouched parts of the grid.
+* **The page starts from the rule, not from blank.** An untouched list is
+  already a valid want list, so the review is opt-in per row.
+
+The saved shape is `{"geeklist": "...", "cells": {candidate_id: {my_item_id: bool}}}`.
 
 Order inside an accept set does not matter. This trade runs TradeMaximizer with
 no priority scheme (`379213-officialwants.txt` lists `ALLOW-DUMMIES
