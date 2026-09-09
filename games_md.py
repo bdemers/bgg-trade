@@ -55,10 +55,22 @@ def parse_games(md_path):
 
         title = lines[0].strip()
 
+        # Everything before "### Description" is metadata about the game.
+        # Everything after it is the body posted to BGG verbatim, and is never
+        # read for metadata. Scanning the whole section used to mean a sentence
+        # like "- Hold: the promo cards are missing" inside a description
+        # quietly pulled the game out of the trade while reading as prose.
+        head, description_lines, in_desc = [], [], False
+        for line in lines[1:]:
+            if line.strip().startswith('### Description'):
+                in_desc = True
+                continue
+            (description_lines if in_desc else head).append(line)
+
         # Extract BGG ID and Link
         bgg_id = None
         bgg_link = None
-        for line in lines:
+        for line in head:
             match = re.search(r'https://boardgamegeek\.com/boardgame[a-z]*/(\d+)', line)
             if match:
                 bgg_id = match.group(1)
@@ -67,7 +79,7 @@ def parse_games(md_path):
 
         if not bgg_id:
             # Fallback for simpler links
-            for line in lines:
+            for line in head:
                 match = re.search(r'boardgamegeek\.com/boardgame/(\d+)', line)
                 if match:
                     bgg_id = match.group(1)
@@ -76,16 +88,26 @@ def parse_games(md_path):
         # A "- Hold: reason" line keeps the game in this file but out of the trade.
         # The generated add_item stays commented out so a regenerate cannot re-list it.
         hold = None
-        for line in lines:
+        for line in head:
             match = re.match(r'-\s*Hold:\s*(.*)', line.strip(), flags=re.IGNORECASE)
             if match:
                 hold = match.group(1).strip() or "on hold"
                 break
 
+        # A metadata line that ended up below the heading is almost always a
+        # mistake, and it is one that fails silently. Say so rather than ignore it.
+        for line in description_lines:
+            match = re.match(r'-\s*(Hold|Value|Shipping|Floor)\s*:',
+                             line.strip(), flags=re.IGNORECASE)
+            if match:
+                print(f"Warning: '{line.strip()}' sits below '### Description' for "
+                      f"'{title}', so it is being posted as body text and ignored as "
+                      f"metadata. Move it above the heading if you meant it to count.")
+
         # Money lines. Anything unparseable is reported and ignored, rather than
         # silently becoming a floor of zero.
         money = {'value': None, 'shipping': None, 'floor': None}
-        for line in lines:
+        for line in head:
             match = re.match(r'-\s*(Value|Shipping|Floor)\s*:\s*(.*)',
                              line.strip(), flags=re.IGNORECASE)
             if not match:
@@ -97,16 +119,6 @@ def parse_games(md_path):
                       f"for '{title}'; ignoring it.")
             else:
                 money[key] = amount
-
-        # Extract description / comments
-        description_lines = []
-        in_desc = False
-        for line in lines:
-            if line.strip().startswith('### Description'):
-                in_desc = True
-                continue
-            if in_desc:
-                description_lines.append(line)
 
         description = '\n'.join(description_lines).strip()
 

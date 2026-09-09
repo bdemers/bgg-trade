@@ -163,10 +163,25 @@ and all ignored by the importer:
 - Floor: 40       # replaces the whole sum; nothing is added on top
 ```
 
-`$25`, `25` and `25.00` all parse. Anything else prints a warning and is
-ignored, rather than quietly becoming a floor of zero. The values currently in
-`games.md` were seeded from the marketplace medians, so they read as hand-set
-even though nobody has revised them yet.
+`$25`, `25` and `25.00` all parse, and a trailing `# why` comment is stripped.
+Anything else prints a warning and is ignored, rather than quietly becoming a
+floor of zero.
+
+**Metadata is only read above `### Description`.** That boundary matters. The
+parser used to scan the whole section, so a description containing a sentence
+like `- Hold: the promo cards are missing` pulled the game out of the trade
+while still reading as ordinary prose, and the same text was posted to BGG. It
+is the same silent un-listing the `Hold` convention exists to prevent, with a
+different cause. A metadata-looking line below the heading now prints a warning
+naming the line and the game.
+
+Markdown was kept over TOML deliberately. The description is not metadata, it
+is the payload: it is POSTed to BGG verbatim, blank lines and BGG markup
+included, and prose belongs in a prose format. TOML is the only real
+alternative (`tomllib` is stdlib, `preferences.toml` already uses it) and would
+delete most of this parser; it is worth revisiting if per-game metadata ever
+grows past a handful of scalars. YAML is out: no stdlib parser, and the README
+promises no third-party packages.
 
 ### The Hold convention
 To keep a game in `games.md` but out of the trade, add a `Hold` line to its
