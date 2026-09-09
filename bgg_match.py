@@ -1230,16 +1230,25 @@ def render_trade_plan(plan):
     out += (f"A want has to be worth at least what you give up plus the postage on the box "
             f"you ship (`floor = value x {cfg['ratio']} + shipping`). "
             f"Value is the median USD asking price on the BGG marketplace unless "
-            f"`games.md` says otherwise. Hand-set numbers are marked ✍️.\n\n")
+            f"`games.md` says otherwise. Hand-set numbers are marked ✍️, and a "
+            f"`- Floor:` line shows — for value and shipping, since it replaces "
+            f"both rather than adding them up.\n\n")
     out += "| Your Item | Market | Value | Shipping | Floor | Clears Floor |\n"
     out += "| :--- | ---: | ---: | ---: | ---: | ---: |\n"
     for item in plan['my_items']:
         title = item['title'] + (" ⚠️" if item['unpriced'] else "")
         copies = sum(c['copies'] for c in item['accepts'])
         pen = " ✍️"
-        value = _money(item['value']) + (pen if item['value_source'] == 'games.md' else "")
-        shipping = _money(item['postage']) + (pen if item['shipping_source'] == 'games.md' else "")
-        floor = f"**{_money(item['floor'])}**" + (pen if item['floor_source'] == 'games.md' else "")
+        if item['floor_source'] == 'games.md':
+            # An explicit `- Floor:` line is the whole answer, so the value and
+            # shipping columns played no part in it. Saying so beats printing
+            # numbers that look like they added up to the floor and did not.
+            value = shipping = "—"
+            floor = f"**{_money(item['floor'])}**{pen}"
+        else:
+            value = _money(item['value']) + (pen if item['value_source'] == 'games.md' else "")
+            shipping = _money(item['postage']) + (pen if item['shipping_source'] == 'games.md' else "")
+            floor = f"**{_money(item['floor'])}**"
         out += (f"| {title} | {_money(item['price'])} | {value} | {shipping} "
                 f"| {floor} | {len(item['accepts'])} games, {copies} copies |\n")
     out += "\n"

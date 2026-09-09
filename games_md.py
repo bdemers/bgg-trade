@@ -23,8 +23,14 @@ import re
 
 
 def _money(text):
-    """Read '35', '$35', '35.00' or '$35.00' as a float, else None."""
-    match = re.match(r'\$?\s*(\d+(?:\.\d+)?)\s*$', (text or '').strip())
+    """Read '35', '$35', '35.00' or '$35.00' as a float, else None.
+
+    A trailing '# why this number' comment is stripped first. The reason a
+    price was chosen is worth keeping next to the price, and markdown has
+    nowhere else to put it.
+    """
+    text = (text or '').split('#', 1)[0].strip()
+    match = re.match(r'\$?\s*(\d+(?:\.\d+)?)\s*$', text)
     return float(match.group(1)) if match else None
 
 
