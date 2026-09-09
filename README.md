@@ -101,18 +101,32 @@ section sets the floor a want has to clear:
 floor = max(market price x ratio, absolute_min) + postage
 ```
 
-Market price is the median USD asking price on the BGG marketplace, fetched for
+Value starts as the median USD asking price on the BGG marketplace, fetched for
 the shortlist and cached. Postage is in there because you ship a box either
 way: trading a $20 game for an $18 game and paying $10 to mail it is a loss,
 however much you like the $18 game.
 
+That median is only a starting point. Your own numbers live in `games.md`, next
+to the game they describe:
+
+```markdown
+## A Game of Thrones: The Board Game
+
+- BGG Link: https://boardgamegeek.com/boardgame/103343/a-game-of-thrones-the-board-game-second-edition
+- Value: 25       # replaces the marketplace median; shipping is still added
+- Shipping: 15    # this box, not the trade.postage default
+- Floor: 40       # replaces the whole sum; nothing is added on top
+```
+
+Reach for `Value:` when the market median is wrong about your copy, and for
+`Floor:` when you already know the number you want to see. The report marks
+every hand-set number with ✍️, so you can tell yours from the market's.
+
 The report then prints, for each game you are offering, its floor and every
 candidate that clears it. That table is your want list in waiting.
 
-Two knobs worth knowing:
-
-* `[trade.postage_overrides]` raises postage per BGG ID, for the heavy boxes.
-* `accept_below_floor` lists BGG IDs you want regardless of price. Keep it short.
+One more knob: `accept_below_floor` in `preferences.toml` lists BGG IDs you want
+regardless of price. Keep it short.
 
 ---
 

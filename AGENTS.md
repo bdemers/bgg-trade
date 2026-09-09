@@ -5,7 +5,11 @@ Hello! If you are an AI assistant working on this repository, please review thes
 ## Project Structure
 * `bgg_match.py`: The core python script that runs the matching algorithm.
 * `run.sh`: Shell wrapper for the python script (makes running matches easy).
-* `games.md`: The hand-maintained list of games you are offering. Source of truth for the importer.
+* `games.md`: The hand-maintained list of games you are offering. Source of truth
+  for the importer *and* for what each item is worth.
+* `games_md.py`: The `games.md` parser. Shared: `generate_curl_script.py` needs
+  the descriptions and holds, `bgg_match.py` needs the money lines. It used to
+  live inside the generator; do not fork a second copy.
 * `generate_curl_script.py`: Turns `games.md` into `add_games.sh`.
 * `add_games.sh`: **Generated.** Posts each game to the geeklist. Never hand-edit it.
 * `.env`: Credentials and the active geeklist ID. Gitignored (`.gitignore:6-8`).
@@ -146,6 +150,24 @@ python3 generate_curl_script.py
 the list ID never appears in a payload, it only selects the POST URL, so it is
 a runtime concern that belongs in `.env`.
 
+### The money lines
+`bgg_match.py` reads three optional lines per game, all parsed in `games_md.py`
+and all ignored by the importer:
+
+```markdown
+## A Game of Thrones: The Board Game
+
+- BGG Link: https://boardgamegeek.com/boardgame/103343/a-game-of-thrones-the-board-game-second-edition
+- Value: 25       # replaces the marketplace median; shipping is still added
+- Shipping: 15    # this box, not the trade.postage default
+- Floor: 40       # replaces the whole sum; nothing is added on top
+```
+
+`$25`, `25` and `25.00` all parse. Anything else prints a warning and is
+ignored, rather than quietly becoming a floor of zero. The values currently in
+`games.md` were seeded from the marketplace medians, so they read as hand-set
+even though nobody has revised them yet.
+
 ### The Hold convention
 To keep a game in `games.md` but out of the trade, add a `Hold` line to its
 section:
@@ -202,8 +224,13 @@ The reasoning behind that shape, so nobody re-litigates it:
 
 * **Postage is in the formula because you ship a box either way.** Trading a $20
   game for an $18 game and paying $10 to mail it is a loss, however much you
-  like the $18 game. `[trade.postage_overrides]` raises it per BGG ID for the
-  heavy boxes.
+  like the $18 game. A `- Shipping:` line in `games.md` raises it for the heavy
+  boxes; `trade.postage` is only the default.
+* **`games.md` beats the marketplace wherever it has an opinion.** The median is
+  a starting point, and you know your own copy better than it does. `- Value:`
+  replaces the median and still gets shipping added. `- Floor:` replaces the
+  whole sum and gets nothing added. Both exist on purpose: one is an input, the
+  other is an answer. The report marks hand-set numbers with ✍️.
 * **Price comes from the marketplace, not from a heuristic.** A tier function
   over BGG rank, rating, year and play time was built first and thrown away.
   Rank measures quality, not price: it put Pandemic at $40 and Santorini at $25

@@ -10,6 +10,8 @@ import urllib.request
 import urllib.parse
 import xml.etree.ElementTree as ET
 
+from games_md import index_by_id
+
 # Configuration. All of these are replaced in main() from .env / CLI flags;
 # the values here are only placeholders so module-level imports work.
 GEEKLIST_ID = ""
@@ -48,8 +50,7 @@ DEFAULT_PREFS = {
                 "expansion_bonus": 3.0, "score_cap": 12.0},
     "candidates": {"min_bgg_rating": 6.0, "max_bgg_rank": 6000},
     "trade": {"enabled": True, "postage": 10.0, "ratio": 1.0, "absolute_min": 0.0,
-              "unpriced_floor": 20.0, "price_top_n": 150, "accept_below_floor": [],
-              "postage_overrides": {}},
+              "unpriced_floor": 20.0, "price_top_n": 150, "accept_below_floor": []},
 }
 
 
@@ -462,17 +463,24 @@ def market_price(gid, prices):
     return (prices.get(str(gid)) or {}).get('median')
 
 
-def compute_floors(geeklist, offered_game_ids, prices):
+def compute_floors(geeklist, offered_game_ids, prices, offerings=None):
     """What each of your items has to earn before a trade is worth making.
 
-    floor = max(market price x ratio, absolute_min) + postage
+    floor = max(value x ratio, absolute_min) + shipping
 
     Postage is in there because you ship a box either way. A swap that lands
     you a game worth less than what you gave up plus the postage is a loss,
     even when the other side is a game you quite like.
+
+    The marketplace median is only the starting point. games.md wins wherever
+    it has an opinion, because you know your copy and the median does not:
+
+    * `- Value: 15`    replaces the median. Shipping is still added.
+    * `- Shipping: 15` replaces the default postage for that box.
+    * `- Floor: 40`    replaces the whole sum. Nothing is added to it.
     """
     cfg = PREFS['trade']
-    overrides = {str(k): float(v) for k, v in (cfg.get('postage_overrides') or {}).items()}
+    offerings = offerings or {}
 
     titles = {}
     for item in geeklist:
@@ -481,18 +489,41 @@ def compute_floors(geeklist, offered_game_ids, prices):
             titles.setdefault(gid, (item.get('item') or {}).get('name', 'Unknown'))
 
     floors = []
-    for gid in sorted(offered_game_ids, key=lambda g: -(market_price(g, prices) or 0)):
+    for gid in offered_game_ids:
+        stated = offerings.get(str(gid), {})
         price = market_price(gid, prices)
-        postage = overrides.get(str(gid), float(cfg['postage']))
-        base = (price if price is not None else float(cfg['unpriced_floor'])) * float(cfg['ratio'])
+
+        if stated.get('value') is not None:
+            value, value_source = float(stated['value']), 'games.md'
+        elif price is not None:
+            value, value_source = price, 'market'
+        else:
+            value, value_source = float(cfg['unpriced_floor']), 'unpriced'
+
+        if stated.get('shipping') is not None:
+            shipping, shipping_source = float(stated['shipping']), 'games.md'
+        else:
+            shipping, shipping_source = float(cfg['postage']), 'default'
+
+        if stated.get('floor') is not None:
+            floor, floor_source = float(stated['floor']), 'games.md'
+        else:
+            floor = max(value * float(cfg['ratio']), float(cfg['absolute_min'])) + shipping
+            floor_source = 'computed'
+
         floors.append({
             'id': gid,
             'title': titles.get(gid, 'Unknown'),
             'price': price,
-            'postage': postage,
-            'floor': round(max(base, float(cfg['absolute_min'])) + postage, 2),
-            'unpriced': price is None,
+            'value': value,
+            'value_source': value_source,
+            'postage': shipping,
+            'shipping_source': shipping_source,
+            'floor': round(floor, 2),
+            'floor_source': floor_source,
+            'unpriced': value_source == 'unpriced',
         })
+    floors.sort(key=lambda f: -f['floor'])
     return floors
 
 
@@ -1186,7 +1217,10 @@ def markdown_to_html(md, title):
 
 
 def _money(value):
-    return f"${value:,.0f}" if value is not None else "—"
+    """Whole dollars stay whole; cents only show up when there are cents."""
+    if value is None:
+        return "—"
+    return f"${value:,.0f}" if float(value).is_integer() else f"${value:,.2f}"
 
 
 def render_trade_plan(plan):
@@ -1194,18 +1228,24 @@ def render_trade_plan(plan):
     cfg = PREFS['trade']
     out = "## 💵 What a Trade Has to Beat\n\n"
     out += (f"A want has to be worth at least what you give up plus the postage on the box "
-            f"you ship (`floor = market price x {cfg['ratio']} + postage`). "
-            f"Prices are median USD asking prices from the BGG marketplace.\n\n")
-    out += "| Your Item | Market | Postage | Floor | Clears Floor |\n"
-    out += "| :--- | ---: | ---: | ---: | ---: |\n"
+            f"you ship (`floor = value x {cfg['ratio']} + shipping`). "
+            f"Value is the median USD asking price on the BGG marketplace unless "
+            f"`games.md` says otherwise. Hand-set numbers are marked ✍️.\n\n")
+    out += "| Your Item | Market | Value | Shipping | Floor | Clears Floor |\n"
+    out += "| :--- | ---: | ---: | ---: | ---: | ---: |\n"
     for item in plan['my_items']:
         title = item['title'] + (" ⚠️" if item['unpriced'] else "")
         copies = sum(c['copies'] for c in item['accepts'])
-        out += (f"| {title} | {_money(item['price'])} | {_money(item['postage'])} "
-                f"| **{_money(item['floor'])}** | {len(item['accepts'])} games, {copies} copies |\n")
+        pen = " ✍️"
+        value = _money(item['value']) + (pen if item['value_source'] == 'games.md' else "")
+        shipping = _money(item['postage']) + (pen if item['shipping_source'] == 'games.md' else "")
+        floor = f"**{_money(item['floor'])}**" + (pen if item['floor_source'] == 'games.md' else "")
+        out += (f"| {title} | {_money(item['price'])} | {value} | {shipping} "
+                f"| {floor} | {len(item['accepts'])} games, {copies} copies |\n")
     out += "\n"
     if any(i['unpriced'] for i in plan['my_items']):
-        out += "⚠️ = no USD listings on the marketplace, so the floor fell back to `unpriced_floor`.\n\n"
+        out += ("⚠️ = no USD listings on the marketplace and no `- Value:` in `games.md`, "
+                "so the floor fell back to `unpriced_floor`.\n\n")
     if plan['unpriced_candidates']:
         out += (f"*{len(plan['unpriced_candidates'])} candidate games have no USD listing and were "
                 f"left out of every accept list.*\n\n")
@@ -1322,6 +1362,8 @@ def main():
     parser.add_argument("--refresh-collection", action="store_true", help="Force refresh of user collection")
     parser.add_argument("--refresh-geeklist", action="store_true", help="Force refresh of math trade geeklist items")
     parser.add_argument("--refresh-prices", action="store_true", help="Force refresh of cached marketplace prices")
+    parser.add_argument("--games", default="games.md",
+                        help="Markdown file listing your offerings, read for Value/Shipping/Floor lines")
     args = parser.parse_args()
     
     if not args.geeklist:
@@ -1378,7 +1420,14 @@ def main():
                          + [r['id'] for r in recommendations[:PREFS['trade']['price_top_n']]])
             prices = price_games(sorted(set(shortlist) | set(offered_game_ids)),
                                  force=args.refresh_prices)
-            floors = compute_floors(geeklist, offered_game_ids, prices)
+            # games.md overrides the marketplace wherever it has an opinion.
+            offerings = index_by_id(args.games) if os.path.exists(args.games) else {}
+            stated = sum(1 for gid in offered_game_ids
+                         if any(offerings.get(str(gid), {}).get(k) is not None
+                                for k in ('value', 'shipping', 'floor')))
+            if stated:
+                print(f"Read hand-set money lines for {stated} of your items from {args.games}.")
+            floors = compute_floors(geeklist, offered_game_ids, prices, offerings)
             plan = build_trade_plan(floors, wishlist,
                                     recommendations[:PREFS['trade']['price_top_n']], prices)
         elif not offered_game_ids:

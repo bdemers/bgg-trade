@@ -243,22 +243,27 @@ max_bgg_rank = 6000
 [trade]
 # What a want has to be worth before you will accept it for one of your items:
 #
-#   floor = max(market price x ratio, absolute_min) + postage
+#   floor = max(value x ratio, absolute_min) + shipping
 #
-# Market price is the median USD asking price on the BGG marketplace, read from
+# Value starts as the median USD asking price on the BGG marketplace, read from
 # the public api.geekdo.com/api/market/products endpoint and cached in
 # prices.json inside the geeklist cache directory.
+#
+# That median is only a starting point. Per-game numbers belong in games.md,
+# next to the game they describe, as `- Value:`, `- Shipping:` and `- Floor:`
+# lines. This section holds the defaults they fall back to.
 #
 # Postage is in the formula because you ship a box either way. Trading a $20
 # game for an $18 game and paying $10 to mail it is a loss, however much you
 # like the $18 game. Set postage = 0 to price the swap alone.
 enabled = true
-postage = 10.0        # per outgoing box, CONUS ground
+postage = 10.0        # per outgoing box; override per game with `- Shipping:`
 ratio = 1.0           # 1.0 = never trade down; 0.8 = tolerate a 20% haircut
 absolute_min = 0.0    # hard floor whatever you give up; useful with ratio < 1
 
-# No USD listings means no median. Rather than let an unpriced item fall through
-# with a floor of just the postage, it gets this instead, and the report flags it.
+# No USD listings and no `- Value:` line means no number at all. Rather than let
+# such an item fall through with a floor of just the postage, it gets this
+# instead, and the report flags it with a warning triangle.
 unpriced_floor = 20.0
 
 # How far down the recommendation list to price. Every entry costs one request.
@@ -268,8 +273,3 @@ price_top_n = 150
 # floor entirely, so keep the list short and deliberate.
 # 251420 = Choose Your Own Adventure: House of Danger, wishlisted, sells for $5.
 accept_below_floor = []
-
-[trade.postage_overrides]
-# Boxes that cost more (or less) than the default to mail, by BGG id.
-# 103343 = A Game of Thrones: The Board Game, a big heavy box.
-"103343" = 15.0
