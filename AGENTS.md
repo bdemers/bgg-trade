@@ -282,8 +282,22 @@ Two design points worth keeping:
   a change to a floor in `games.md` still move the untouched parts of the grid.
 * **The page starts from the rule, not from blank.** An untouched list is
   already a valid want list, so the review is opt-in per row.
+* **Confirmations carry a fingerprint of what they confirmed.** The signature is
+  the row's default vector, `'1'`/`'0'` per item in `my_items` order, built
+  identically in `review.py` (JS `sig()`) and `bgg_match.py`
+  (`build_trade_plan`). If a price moves or a floor changes, the signature stops
+  matching and the row is un-reviewed again. Keep those two in step.
 
-The saved shape is `{"geeklist": "...", "cells": {candidate_id: {my_item_id: bool}}}`.
+The saved shape is:
+
+```json
+{"geeklist": "383775",
+ "cells": {"<candidate id>": {"<my item id>": true}},
+ "confirmed": {"<candidate id>": "110010011"}}
+```
+
+"Reviewed" means confirmed or edited. The report prints the coverage, so an
+untouched list is visibly untouched rather than quietly assumed.
 
 Order inside an accept set does not matter. This trade runs TradeMaximizer with
 no priority scheme (`379213-officialwants.txt` lists `ALLOW-DUMMIES

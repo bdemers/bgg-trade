@@ -538,28 +538,30 @@ def load_overrides(path=MATRIX_OVERRIDES_FILE):
     floor, so re-pricing a game or editing games.md still moves the untouched
     parts of the matrix.
     """
+    empty = {'cells': {}, 'confirmed': {}}
     if not os.path.exists(path):
-        return {}
+        return empty
     try:
         with open(path, 'r', encoding='utf-8') as f:
             saved = json.load(f)
     except Exception as e:
         print(f"Warning: could not read {path} ({e}); ignoring your manual edits.")
-        return {}
+        return empty
 
     listed = str(saved.get('geeklist') or '')
     if listed and listed != str(GEEKLIST_ID):
         print(f"Warning: {path} was written for geeklist {listed}, not {GEEKLIST_ID}. "
               f"Ignoring it. Move it aside to start this trade fresh.")
-        return {}
+        return empty
     cells = saved.get('cells') or {}
+    confirmed = saved.get('confirmed') or {}
     n = sum(len(v) for v in cells.values())
-    if n:
-        print(f"Applying {n} hand-set cells from {path}.")
-    return cells
+    if n or confirmed:
+        print(f"Applying {n} hand-set cells and {len(confirmed)} confirmations from {path}.")
+    return {'cells': cells, 'confirmed': confirmed}
 
 
-def build_trade_plan(floors, wishlist, recommendations, prices, overrides=None):
+def build_trade_plan(floors, wishlist, recommendations, prices, review=None):
     """The whole matrix: every candidate against every item you are offering.
 
     `default` is what the floor rule says. `accept` is what you ended up with
@@ -572,7 +574,9 @@ def build_trade_plan(floors, wishlist, recommendations, prices, overrides=None):
     likely.
     """
     exceptions = {str(g) for g in (PREFS['trade'].get('accept_below_floor') or [])}
-    overrides = overrides or {}
+    review = review or {}
+    overrides = review.get('cells') or {}
+    confirmed = review.get('confirmed') or {}
 
     candidates = []
     for r in wishlist + recommendations:
@@ -600,6 +604,13 @@ def build_trade_plan(floors, wishlist, recommendations, prices, overrides=None):
                 rule = c['price'] is not None and c['price'] >= f['floor']
             c['default'][f['id']] = rule
             c['accept'][f['id']] = bool((overrides.get(c['id']) or {}).get(f['id'], rule))
+        # A confirmation signs off on one specific suggestion. Same fingerprint
+        # as review.py builds, so a re-priced game or a changed floor retires it
+        # rather than leaving a stale sign-off in place.
+        signature = ''.join('1' if c['default'][f['id']] else '0' for f in floors)
+        c['confirmed'] = confirmed.get(c['id']) == signature
+        c['edited'] = any(c['accept'][f['id']] != c['default'][f['id']] for f in floors)
+        c['reviewed'] = c['confirmed'] or c['edited']
 
     plan = {
         'geeklist': str(GEEKLIST_ID),
@@ -1319,6 +1330,13 @@ def render_trade_plan(plan):
         for item in plan['my_items']:
             if c['accept'][item['id']] != c['default'][item['id']]:
                 edits.append((c, item, c['accept'][item['id']]))
+    done = sum(1 for c in plan['candidates'] if c.get('reviewed'))
+    total = len(plan['candidates'])
+    out += (f"**Reviewed:** {done} of {total} candidates "
+            f"({sum(1 for c in plan['candidates'] if c.get('confirmed'))} confirmed as suggested, "
+            f"{sum(1 for c in plan['candidates'] if c.get('edited'))} edited). "
+            f"The remaining {total - done} follow the floors untouched.\n\n")
+
     if edits:
         out += "## ✍️ Your Edits\n\n"
         out += (f"{len(edits)} cells where you overruled the floor in the review page "

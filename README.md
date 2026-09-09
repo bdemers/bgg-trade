@@ -187,8 +187,16 @@ The chips arrive pre-filled from the floors, so an untouched list is already a
 valid want list. You are only there for the disagreements:
 
 * Click a chip to flip one cell, or drag across chips to set a run.
-* `all` and `none` per row, or keys `j`/`k` to move, `1`-`9` to toggle, `a`, `n`.
-* Filter to your wishlist, or to rows you have already edited.
+* Hit **ok** to confirm a row exactly as suggested, so it counts as reviewed.
+* `all` and `none` per row, or keys `j`/`k` to move, space to confirm and
+  advance, `1`-`9` to toggle, `a`, `n`.
+* Filter to your wishlist, to rows you edited, or to what you have not reviewed
+  yet. The header keeps a running "48 of 161 reviewed".
+
+A confirmation signs off on one specific suggestion. If a price moves or you
+change a floor in `games.md`, the suggestion changes and the row returns to the
+not-reviewed queue rather than staying signed off against an answer that no
+longer exists.
 
 Every click saves to `matrix_overrides.json` in the repo, with no download and
 no copy-paste step. Only deviations from the floor are stored, so re-pricing a

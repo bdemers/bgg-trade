@@ -1,0 +1,18 @@
+{
+ "cells": {
+  "157354": {
+   "103343": true
+  },
+  "295947": {
+   "64826": true,
+   "89409": true
+  },
+  "434906": {
+   "301919": false,
+   "99437": false
+  }
+ },
+ "confirmed": {},
+ "geeklist": "383775",
+ "note": "Cells set by hand in review.py. Only deviations from the floor rule are stored; everything else follows games.md."
+}
