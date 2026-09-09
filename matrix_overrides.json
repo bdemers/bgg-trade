@@ -1,18 +1,6 @@
 {
- "cells": {
-  "157354": {
-   "103343": true
-  },
-  "295947": {
-   "64826": true,
-   "89409": true
-  },
-  "434906": {
-   "301919": false,
-   "99437": false
-  }
- },
+ "cells": {},
  "confirmed": {},
  "geeklist": "383775",
- "note": "Cells set by hand in review.py. Only deviations from the floor rule are stored; everything else follows games.md."
+ "note": "Written by review.py. 'cells' holds only deviations from the floor rule; everything else follows games.md. 'confirmed' maps a game to the suggestion you signed off on, so a changed floor retires the confirmation instead of keeping a stale one."
 }

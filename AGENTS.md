@@ -306,6 +306,65 @@ SEED=20260621 METRIC=Users-Trading`, and TradeMaximizer defaults to no
 priorities). So a want list is a **set, not a ranking**: everything you list is
 equally likely, which is why the floor has to do the work.
 
+## OLWLG: Submitting the Want List
+
+Not built yet. These are reverse-engineered from the live site, so they are
+worth keeping rather than working out again. The OLWLG is the On-Line Want-List
+Generator at `bgg.activityclub.org/olwlg`, a separate site from BGG.
+
+**Login** is username in, geekmail out, cookie set on click:
+
+```
+POST https://bgg.activityclub.org/olwlg/bgglogin.cgi   (multipart)
+  user=<BGG username>&submit=Send Now
+  -> OLWLG geekmails you a one-time link. Clicking it in a browser sets the cookie.
+```
+
+**The editor** is `mywants.cgi?listid=<GEEKLIST_ID>`, "Steps 4 & 5". It renders a
+grid of every item in the trade against every item of yours. The interesting
+part is that a checked box is nothing but a hidden input, appended by the page's
+own `xclick()` handler:
+
+```html
+<input type="hidden" name="want" value="<WANTID>">
+```
+
+So the whole submission is two form posts, both to `mywants.cgi?listid=<id>`,
+both `application/x-www-form-urlencoded`, with the login cookie:
+
+```
+1. Save   ("Confirm Changes"): listid=<id>&modify=1&newstyle=&want=<id1>&want=<id2>...
+2. Submit ("Submit My Wants"): listid=<id>&newstyle=&md5=<from the page>&submit=Submit My Wants
+```
+
+The save carries the complete want set rather than a delta, which makes it
+idempotent and re-runnable, the same property `add_games.sh` has. `md5` is a
+hidden field on the submit form and has to be read from a fresh GET.
+
+**The one unknown:** the literal format of `<WANTID>`. The grid only renders for
+a logged-in user who has items in the trade, so an authenticated page capture is
+needed to pin it down:
+
+```bash
+curl -sS -b "<cookie>" "https://bgg.activityclub.org/olwlg/mywants.cgi?listid=383775" -o mywants-capture.html
+```
+
+Two more things the site cares about:
+
+* Jeff asks people to use the "Submit My Wants" button rather than pasting the
+  text list into a geekmail. Driving that same button is within the site's
+  intent; the geekmail path is explicitly discouraged on the page itself.
+* It is one small volunteer-run server that has had outages. A handful of
+  requests per run, no polling.
+
+Also unbuilt: **duplicate protection**. If four copies of a game are listed
+across nine of your items, you can receive up to nine copies. The fix is a dummy
+item per wanted game, created through the same page:
+
+```
+POST mywants.cgi?listid=<id>   newdummy=<short id>&newdummydesc=<text>&group=on
+```
+
 ## Known Rough Edges
 - The geeklist item author is read by fixed index, `links[2]`
   (`bgg_match.py:499`). If BGG reorders that array the report will attribute
