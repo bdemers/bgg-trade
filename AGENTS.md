@@ -341,13 +341,39 @@ The save carries the complete want set rather than a delta, which makes it
 idempotent and re-runnable, the same property `add_games.sh` has. `md5` is a
 hidden field on the submit form and has to be read from a fresh GET.
 
-**The one unknown:** the literal format of `<WANTID>`. The grid only renders for
-a logged-in user who has items in the trade, so an authenticated page capture is
-needed to pin it down:
+**The grid is only half the story.** Captured read-only on 2026-09-16. The
+login cookie is a single `BGGID=<n>-<n>` cookie, and a GET with just that
+cookie returns the logged-in pages.
 
-```bash
-curl -sS -b "<cookie>" "https://bgg.activityclub.org/olwlg/mywants.cgi?listid=383775" -o mywants-capture.html
+`mywants.cgi` only renders rows for games **already added as wants** in Step 3
+(`viewlist.cgi`). With none added the grid is empty, no `xclick()` calls are
+present, and the `want` value format still cannot be read off the page. The
+`md5` on an empty list is `1B2M2Y8AsgTpgAmY7PhCfg`, the base64 MD5 of the empty
+string, so it looks like a hash of the saved want set.
+
+Step 3 is where a want is actually created, and its payload is fully known:
+
 ```
+POST modifywants.cgi   (multipart, the page sends FormData)
+  version=3&listid=<id>&item=<wanted geeklist item id>&itemts=<n>
+  &mine=<your geeklist item id>&mine=<...>        one per item you would give
+  -> JSON; {"error": ..., "item": ...} on failure
+```
+
+* `item` is the BGG geeklist **listitem id** of the copy you want, the same id
+  `wants_plan.json` carries in `listitem_ids`. One call per copy.
+* `mine` is the listitem id of your own offering (e.g. Pandemic is `13123007`),
+  **not** the BGG game id and not the short OLWLG number (`3281`) the official
+  text format uses.
+* `itemts` is a per-item number that only appears in the page's
+  `clickwant(item, itemts, name, gameid, value)` calls. Harvest it from a
+  `viewlist.cgi` page. `viewmywants=1&viewall=1` only covers games on your BGG
+  lists (152 items, 745KB); a full `viewall=1` is needed for the rest.
+* The "1-click add" is a GET to the same script without `mine`.
+
+**GETs are not side-effect free.** Plain `viewlist.cgi?listid=<id>` shows only
+items added "since you last viewed this page", so fetching it moves that
+marker. Always pass `viewall=1`.
 
 Two more things the site cares about:
 
