@@ -30,6 +30,9 @@ Hello! If you are an AI assistant working on this repository, please review thes
   your item ids.
 * `review.py` / `review.sh`: The matrix review page. Serves a clickable grid on
   127.0.0.1 and writes your decisions back into the repo.
+* `olwlg.py`: Stages the want list on the OLWLG from `wants_plan.json`, with
+  duplicate protection. Never submits. See "OLWLG: Staging the Want List".
+  Its page captures cache under `geeklist-<ID>/olwlg/`.
 * `matrix_overrides.json`: Your hand-set cells. **Committed**, because these are
   decisions rather than derived data. Only deviations from the floor rule are
   stored, so untouched cells keep following `games.md`. It records the geeklist
@@ -39,8 +42,7 @@ No cache directory exists in the working tree right now, so the next `./run.sh`
 will do a full download before it can match anything.
 
 ## Configuration
-Everything environment-specific lives in `.env`. There are exactly three keys
-(`.env.example:5-14`):
+Everything environment-specific lives in `.env`, templated by `.env.example`:
 
 * `GEEKLIST_ID`: the single source of truth for which math trade is active.
   `bgg_match.py` uses it as the default for `--geeklist` and refuses to run when
@@ -49,6 +51,15 @@ Everything environment-specific lives in `.env`. There are exactly three keys
   its list from (`add_games.sh:45`).
 * `GEEK_SESSION`: the `GeekSession` cookie value from a logged-in browser.
 * `BGA_TOKEN`: an optional bearer token, used only when `GEEK_SESSION` is empty.
+* `BGG_USERNAME` and `BGG_USER_ID`: whose collection to read, and which
+  listings are yours. The ID is numeric.
+* `OLWLG_BGGID`: the OLWLG login cookie, used only by `olwlg.py`.
+
+**The collection download is blocked for urllib.** On 2026-09-16
+`xmlapi2/collection` answered `bgg_match.py` with 403 while curl, sending the
+same `GeekAuth` header, got 202 then 200. `--refresh-collection` then falls back
+to the cache and still exits 0, so check the log. The workaround used was a
+curl download straight into `geeklist-<ID>/user_collection.xml`.
 
 The current trade is geeklist **383775, "September 2026 US Math Trade"**. The
 previous one was 379213 (June 2026). Pointing both tools at a new trade is a
@@ -306,11 +317,23 @@ SEED=20260621 METRIC=Users-Trading`, and TradeMaximizer defaults to no
 priorities). So a want list is a **set, not a ranking**: everything you list is
 equally likely, which is why the floor has to do the work.
 
-## OLWLG: Submitting the Want List
+## OLWLG: Staging the Want List
 
-Not built yet. These are reverse-engineered from the live site, so they are
-worth keeping rather than working out again. The OLWLG is the On-Line Want-List
-Generator at `bgg.activityclub.org/olwlg`, a separate site from BGG.
+`olwlg.py` stages the want list on the OLWLG, the On-Line Want-List Generator at
+`bgg.activityclub.org/olwlg`, a separate site from BGG. It reads
+`wants_plan.json`, so run `./run.sh` first.
+
+```bash
+python3 olwlg.py plan     # dummies and wants it would send; no network
+python3 olwlg.py stage    # create dummies, add Step 3 wants, save the grid, verify
+python3 olwlg.py verify   # compare the OLWLG grid against the plan, exit 1 on drift
+```
+
+**It never submits.** "Submit My Wants" stays a human click after `verify`
+passes, and `curl()` refuses any form carrying `md5` or `submit`, so no code
+path can reach it. Keep it that way.
+
+Everything below was reverse-engineered from the live site on 2026-09-16.
 
 **Login** is username in, geekmail out, cookie set on click:
 
@@ -320,56 +343,62 @@ POST https://bgg.activityclub.org/olwlg/bgglogin.cgi   (multipart)
   -> OLWLG geekmails you a one-time link. Clicking it in a browser sets the cookie.
 ```
 
-**The editor** is `mywants.cgi?listid=<GEEKLIST_ID>`, "Steps 4 & 5". It renders a
-grid of every item in the trade against every item of yours. The interesting
-part is that a checked box is nothing but a hidden input, appended by the page's
-own `xclick()` handler:
+The result is a single `BGGID=<n>-<n>` cookie, stored as `OLWLG_BGGID` in
+`.env`. It is separate from `GEEK_SESSION`.
 
-```html
-<input type="hidden" name="want" value="<WANTID>">
-```
+**Requests go through curl, not urllib.** The server does not send its Let's
+Encrypt intermediate certificate (`openssl s_client` reports verify error 21).
+Python fails with `CERTIFICATE_VERIFY_FAILED`; macOS curl completes the chain.
+Do not "fix" this by turning verification off.
 
-So the whole submission is two form posts, both to `mywants.cgi?listid=<id>`,
-both `application/x-www-form-urlencoded`, with the login cookie:
+**Three steps, three endpoints.**
 
-```
-1. Save   ("Confirm Changes"): listid=<id>&modify=1&newstyle=&want=<id1>&want=<id2>...
-2. Submit ("Submit My Wants"): listid=<id>&newstyle=&md5=<from the page>&submit=Submit My Wants
-```
+1. **Dummy items**, for duplicate protection:
+   ```
+   POST mywants.cgi?listid=<id>   listid=<id>&newstyle=&newdummy=<SHORT>&newdummydesc=<text>
+   ```
+   `SHORT` is alphanumeric, at most 7 characters, with at least one letter. The
+   description is capped at 29. The dummy's item id **is** `SHORT`. Do **not**
+   send `group=on`: that checkbox makes a *non*-duplicate-protected dummy.
 
-The save carries the complete want set rather than a delta, which makes it
-idempotent and re-runnable, the same property `add_games.sh` has. `md5` is a
-hidden field on the submit form and has to be read from a fresh GET.
+2. **Step 3 wants**, one call per copy you want:
+   ```
+   POST modifywants.cgi   (multipart, the page sends FormData)
+     version=3&listid=<id>&item=<wanted listitem id>&itemts=<n>
+     &mine=<your listitem id or dummy SHORT>&...&stophere=&ivalue=
+     -> JSON; {"error": ..., "item": ...} on failure
+   ```
+   * `item` is the BGG geeklist listitem id of the copy, as in
+     `wants_plan.json`'s `listitem_ids`.
+   * `mine` is your offering's listitem id (Pandemic is `13123007`), not the
+     BGG game id and not the short OLWLG number (`3281`) in the text format.
+   * `itemts` only appears in the page's `clickwant(item, itemts, name, gameid,
+     value)` calls on `viewlist.cgi?listid=<id>&viewall=1` (about 1.6MB). Read
+     `clickwant`, not `oneclickwant`: the 1-click button disappears once an
+     item is wanted.
 
-**The grid is only half the story.** Captured read-only on 2026-09-16. The
-login cookie is a single `BGGID=<n>-<n>` cookie, and a GET with just that
-cookie returns the logged-in pages.
+3. **The Step 4 grid save** ("Confirm Changes"):
+   ```
+   POST mywants.cgi?listid=<id>   listid=<id>&modify=1&newstyle=&want=<cell>&want=<cell>...
+   ```
+   A cell is `<wanted>-<given>`: `13103882-13123016` is Gloomhaven for AGoT,
+   and `FIVETRI-13123007` is the Five Tribes dummy for Pandemic. The grid is a
+   real `<input type=checkbox name="want">` per cell, with `checked` on the
+   saved ones. The save carries the **complete** set and replaces the old one,
+   so `olwlg.py` builds every cell from the plan and refuses to post if the
+   grid lacks any of them. It only renders rows for games already wanted in
+   Step 3, which is why the grid save comes last.
 
-`mywants.cgi` only renders rows for games **already added as wants** in Step 3
-(`viewlist.cgi`). With none added the grid is empty, no `xclick()` calls are
-present, and the `want` value format still cannot be read off the page. The
-`md5` on an empty list is `1B2M2Y8AsgTpgAmY7PhCfg`, the base64 MD5 of the empty
-string, so it looks like a hash of the saved want set.
+**How duplicate protection is laid out.** A game with more than one copy in
+its accept set gets a dummy. Each copy is a Step 3 want of the dummy alone, and
+the dummy row is checked against every real item that accepts the game. In the
+official text format that reads `%LOSTRUI : 0178-LROA 0672-LROA ...` and
+`3281-PANDE : ... %LOSTRUI ...`. Single-copy games skip the dummy.
 
-Step 3 is where a want is actually created, and its payload is fully known:
-
-```
-POST modifywants.cgi   (multipart, the page sends FormData)
-  version=3&listid=<id>&item=<wanted geeklist item id>&itemts=<n>
-  &mine=<your geeklist item id>&mine=<...>        one per item you would give
-  -> JSON; {"error": ..., "item": ...} on failure
-```
-
-* `item` is the BGG geeklist **listitem id** of the copy you want, the same id
-  `wants_plan.json` carries in `listitem_ids`. One call per copy.
-* `mine` is the listitem id of your own offering (e.g. Pandemic is `13123007`),
-  **not** the BGG game id and not the short OLWLG number (`3281`) the official
-  text format uses.
-* `itemts` is a per-item number that only appears in the page's
-  `clickwant(item, itemts, name, gameid, value)` calls. Harvest it from a
-  `viewlist.cgi` page. `viewmywants=1&viewall=1` only covers games on your BGG
-  lists (152 items, 745KB); a full `viewall=1` is needed for the rest.
-* The "1-click add" is a GET to the same script without `mine`.
+**Submitting** (the human part) is the other form on the same page:
+`listid=<id>&newstyle=&md5=<from the page>&submit=Submit My Wants`. `md5`
+tracks the saved set; on an empty list it is `1B2M2Y8AsgTpgAmY7PhCfg`, the
+base64 MD5 of the empty string.
 
 **GETs are not side-effect free.** Plain `viewlist.cgi?listid=<id>` shows only
 items added "since you last viewed this page", so fetching it moves that
@@ -378,18 +407,10 @@ marker. Always pass `viewall=1`.
 Two more things the site cares about:
 
 * Jeff asks people to use the "Submit My Wants" button rather than pasting the
-  text list into a geekmail. Driving that same button is within the site's
-  intent; the geekmail path is explicitly discouraged on the page itself.
-* It is one small volunteer-run server that has had outages. A handful of
-  requests per run, no polling.
-
-Also unbuilt: **duplicate protection**. If four copies of a game are listed
-across nine of your items, you can receive up to nine copies. The fix is a dummy
-item per wanted game, created through the same page:
-
-```
-POST mywants.cgi?listid=<id>   newdummy=<short id>&newdummydesc=<text>&group=on
-```
+  text list into a geekmail. The geekmail path is explicitly discouraged on the
+  page itself.
+* It is one small volunteer-run server that has had outages. `olwlg.py` sleeps
+  a second between writes and never polls.
 
 ## Known Rough Edges
 - The geeklist item author is read by fixed index, `links[2]`

@@ -50,7 +50,11 @@ To put your own games up for trade instead, jump to
    - A clickable page for every candidate game against every game you offer, pre-filled from the floors.
    - Your edits save straight back into the repo as you click, and the next match run folds them in.
 
-3. **Geeklist Importer (`add_games.sh` / `generate_curl_script.py` / `games.md`)**
+3. **Want List Staging (`olwlg.py`)**
+   - Puts your reviewed want list onto the OLWLG, with duplicate protection, and checks it against the plan.
+   - Never presses "Submit My Wants". That click stays yours.
+
+4. **Geeklist Importer (`add_games.sh` / `generate_curl_script.py` / `games.md`)**
    - Automates uploading your own games to the BGG Math Trade Geeklist.
 
 ---
@@ -205,7 +209,27 @@ game or changing a floor in `games.md` still moves every cell you never touched.
 Run `./run.sh` afterwards. The report grows a **Your Edits** section listing each
 cell you overruled, what the rule said, and what you said instead.
 
-### 3. Importing Your Games to the Trade
+### 3. Staging Your Want List on the OLWLG
+
+Log in to the [OLWLG](https://bgg.activityclub.org/olwlg) once in a browser. It
+geekmails you a link, and clicking it sets a `BGGID` cookie. Copy that value into
+`.env` as `OLWLG_BGGID`.
+
+```bash
+python3 olwlg.py plan     # what it would send, without touching the site
+python3 olwlg.py stage    # send it, then check the result
+python3 olwlg.py verify   # re-check at any time; exits 1 if the site and plan differ
+```
+
+For each game you would accept with more than one copy listed, `stage` creates
+a dummy item, so the trade can send you at most one copy. It then adds each copy
+as a want and saves the whole grid with "Confirm Changes".
+
+It does **not** submit. Open the OLWLG, look over the Summary tab, and click
+**Submit My Wants** yourself. Re-running `stage` after you change the matrix is
+safe: the grid save replaces the whole want set rather than adding to it.
+
+### 4. Importing Your Games to the Trade
 
 1. Edit [games.md](games.md) with the list of games you wish to put up for trade.
 2. Run `python3 generate_curl_script.py` to regenerate `add_games.sh`.
